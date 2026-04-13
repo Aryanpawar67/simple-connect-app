@@ -52,7 +52,20 @@ const MOCK_RESULTS = [
   { skill_name: "Mojo", category: "Programming Language", confidence_score: 0.73, popularity: 356, is_new: true, source: "arXiv" },
 ];
 
+const MOCK_HISTORY = [
+  { date: "2026-04-13", rows: 156, newSkills: 38, fileSize: "245 KB", formats: ["CSV", "XLSX"] },
+  { date: "2026-03-28", rows: 142, newSkills: 24, fileSize: "218 KB", formats: ["CSV", "XLSX"] },
+  { date: "2026-03-14", rows: 168, newSkills: 31, fileSize: "261 KB", formats: ["CSV"] },
+  { date: "2026-02-27", rows: 133, newSkills: 19, fileSize: "198 KB", formats: ["CSV", "XLSX"] },
+  { date: "2026-02-12", rows: 151, newSkills: 27, fileSize: "232 KB", formats: ["XLSX"] },
+  { date: "2026-01-30", rows: 129, newSkills: 22, fileSize: "191 KB", formats: ["CSV", "XLSX"] },
+  { date: "2026-01-15", rows: 145, newSkills: 35, fileSize: "224 KB", formats: ["CSV", "XLSX"] },
+];
+
+type ActiveTab = "run" | "history";
+
 const SkillScraperPage = () => {
+  const [activeTab, setActiveTab] = useState<ActiveTab>("run");
   const [mode, setMode] = useState<ScrapeMode>("quick");
   const [selectedSources, setSelectedSources] = useState<string[]>(QUICK_SOURCES);
   const [threshold, setThreshold] = useState(0.25);
