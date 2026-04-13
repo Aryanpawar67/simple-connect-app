@@ -9,12 +9,21 @@ import {
   CalendarRange,
   CalendarDays,
   Database,
+  History,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 type FilterMode = "all" | "specific" | "range";
 type RunState = "idle" | "loading" | "success" | "empty" | "error";
@@ -64,7 +73,18 @@ const PROGRESS_STEPS = [
   "Exporting to Excel…",
 ];
 
+const MOCK_EXPORT_HISTORY = [
+  { date: "2026-04-10", filename: "Lightcast_Skills_Taxonomy_Changelog_Full.xlsx", records: 342, matched: 342, fileSize: "184 KB", filter: "All Data" },
+  { date: "2026-03-15", filename: "Lightcast_Skills_Taxonomy_Changelog_March_2026.xlsx", records: 342, matched: 58, fileSize: "42 KB", filter: "March 2026" },
+  { date: "2026-02-28", filename: "Lightcast_Skills_Taxonomy_Changelog_January_to_February_2026.xlsx", records: 310, matched: 97, fileSize: "68 KB", filter: "Jan–Feb 2026" },
+  { date: "2026-02-01", filename: "Lightcast_Skills_Taxonomy_Changelog_February_2026.xlsx", records: 310, matched: 41, fileSize: "34 KB", filter: "February 2026" },
+  { date: "2026-01-12", filename: "Lightcast_Skills_Taxonomy_Changelog_Full.xlsx", records: 278, matched: 278, fileSize: "156 KB", filter: "All Data" },
+];
+
+type ActiveTab = "run" | "history";
+
 const ChangelogScraperPage = () => {
+  const [activeTab, setActiveTab] = useState<ActiveTab>("run");
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [months, setMonths] = useState("");
   const [startMonth, setStartMonth] = useState("");
@@ -110,6 +130,32 @@ const ChangelogScraperPage = () => {
 
   return (
     <div className="max-w-3xl mx-auto space-y-6 animate-fade-in">
+      {/* Tab Switcher */}
+      <div className="flex gap-1 bg-secondary rounded-xl p-1">
+        {[
+          { id: "run" as ActiveTab, label: "Run Export", icon: Play },
+          { id: "history" as ActiveTab, label: "History", icon: History },
+        ].map((tab) => {
+          const Icon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={cn(
+                "flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all",
+                activeTab === tab.id
+                  ? "bg-card text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Icon className="w-4 h-4" />
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeTab === "run" && (<>
       {/* Filter Mode */}
       <Card className="p-6">
         <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
@@ -267,6 +313,56 @@ const ChangelogScraperPage = () => {
               <Download className="w-4 h-4 mr-1.5" />
               {filename || "Download"}
             </Button>
+          </div>
+        </Card>
+      )}
+      </>)}
+
+      {/* History Tab */}
+      {activeTab === "history" && (
+        <Card className="animate-slide-up overflow-hidden">
+          <div className="p-6 border-b">
+            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+              Past Exports
+            </h3>
+            <p className="text-xs text-muted-foreground mt-1">Previously generated changelog files</p>
+          </div>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Filter</TableHead>
+                  <TableHead className="text-right">Records</TableHead>
+                  <TableHead className="text-right">Matched</TableHead>
+                  <TableHead className="text-right">Size</TableHead>
+                  <TableHead></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {MOCK_EXPORT_HISTORY.map((run) => (
+                  <TableRow key={run.date}>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <CalendarDays className="w-4 h-4 text-muted-foreground" />
+                        <span className="font-medium">{run.date}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="secondary" className="text-xs">{run.filter}</Badge>
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-sm">{run.records}</TableCell>
+                    <TableCell className="text-right font-mono text-sm">{run.matched}</TableCell>
+                    <TableCell className="text-right text-sm text-muted-foreground">{run.fileSize}</TableCell>
+                    <TableCell>
+                      <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                        <Download className="w-4 h-4" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           </div>
         </Card>
       )}
