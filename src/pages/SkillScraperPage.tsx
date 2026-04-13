@@ -379,6 +379,67 @@ const SkillScraperPage = () => {
             </Table>
           </div>
         </Card>
+      </>)}
+
+      {/* History Tab */}
+      {activeTab === "history" && (
+        <Card className="animate-slide-up overflow-hidden">
+          <div className="p-6 border-b">
+            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+              Past Scrape Runs
+            </h3>
+            <p className="text-xs text-muted-foreground mt-1">Click a row to view its results</p>
+          </div>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead className="text-right">Skills Found</TableHead>
+                  <TableHead className="text-right">New</TableHead>
+                  <TableHead className="text-right">File Size</TableHead>
+                  <TableHead>Formats</TableHead>
+                  <TableHead></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {MOCK_HISTORY.map((run) => (
+                  <TableRow key={run.date} className="cursor-pointer hover:bg-secondary/50">
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <CalendarDays className="w-4 h-4 text-muted-foreground" />
+                        <span className="font-medium">{run.date}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-sm">{run.rows}</TableCell>
+                    <TableCell className="text-right">
+                      <Badge variant="default" className="text-xs">{run.newSkills} new</Badge>
+                    </TableCell>
+                    <TableCell className="text-right text-sm text-muted-foreground">{run.fileSize}</TableCell>
+                    <TableCell>
+                      <div className="flex gap-1">
+                        {run.formats.map((f) => (
+                          <Badge key={f} variant="secondary" className="text-xs">{f}</Badge>
+                        ))}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                        <Download className="w-4 h-4" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          {MOCK_HISTORY.length === 0 && (
+            <div className="p-12 text-center">
+              <FileText className="w-10 h-10 text-muted-foreground/40 mx-auto mb-3" />
+              <p className="text-sm text-muted-foreground">No scrapes run yet — start your first scrape</p>
+            </div>
+          )}
+        </Card>
       )}
     </div>
   );
