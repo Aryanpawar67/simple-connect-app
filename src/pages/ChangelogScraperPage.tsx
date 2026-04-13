@@ -130,6 +130,32 @@ const ChangelogScraperPage = () => {
 
   return (
     <div className="max-w-3xl mx-auto space-y-6 animate-fade-in">
+      {/* Tab Switcher */}
+      <div className="flex gap-1 bg-secondary rounded-xl p-1">
+        {[
+          { id: "run" as ActiveTab, label: "Run Export", icon: Play },
+          { id: "history" as ActiveTab, label: "History", icon: History },
+        ].map((tab) => {
+          const Icon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={cn(
+                "flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all",
+                activeTab === tab.id
+                  ? "bg-card text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Icon className="w-4 h-4" />
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeTab === "run" && (<>
       {/* Filter Mode */}
       <Card className="p-6">
         <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
