@@ -316,6 +316,56 @@ const ChangelogScraperPage = () => {
           </div>
         </Card>
       )}
+      </>)}
+
+      {/* History Tab */}
+      {activeTab === "history" && (
+        <Card className="animate-slide-up overflow-hidden">
+          <div className="p-6 border-b">
+            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+              Past Exports
+            </h3>
+            <p className="text-xs text-muted-foreground mt-1">Previously generated changelog files</p>
+          </div>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Filter</TableHead>
+                  <TableHead className="text-right">Records</TableHead>
+                  <TableHead className="text-right">Matched</TableHead>
+                  <TableHead className="text-right">Size</TableHead>
+                  <TableHead></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {MOCK_EXPORT_HISTORY.map((run) => (
+                  <TableRow key={run.date}>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <CalendarDays className="w-4 h-4 text-muted-foreground" />
+                        <span className="font-medium">{run.date}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="secondary" className="text-xs">{run.filter}</Badge>
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-sm">{run.records}</TableCell>
+                    <TableCell className="text-right font-mono text-sm">{run.matched}</TableCell>
+                    <TableCell className="text-right text-sm text-muted-foreground">{run.fileSize}</TableCell>
+                    <TableCell>
+                      <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                        <Download className="w-4 h-4" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </Card>
+      )}
     </div>
   );
 };
