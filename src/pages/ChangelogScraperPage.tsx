@@ -73,7 +73,18 @@ const PROGRESS_STEPS = [
   "Exporting to Excel…",
 ];
 
+const MOCK_EXPORT_HISTORY = [
+  { date: "2026-04-10", filename: "Lightcast_Skills_Taxonomy_Changelog_Full.xlsx", records: 342, matched: 342, fileSize: "184 KB", filter: "All Data" },
+  { date: "2026-03-15", filename: "Lightcast_Skills_Taxonomy_Changelog_March_2026.xlsx", records: 342, matched: 58, fileSize: "42 KB", filter: "March 2026" },
+  { date: "2026-02-28", filename: "Lightcast_Skills_Taxonomy_Changelog_January_to_February_2026.xlsx", records: 310, matched: 97, fileSize: "68 KB", filter: "Jan–Feb 2026" },
+  { date: "2026-02-01", filename: "Lightcast_Skills_Taxonomy_Changelog_February_2026.xlsx", records: 310, matched: 41, fileSize: "34 KB", filter: "February 2026" },
+  { date: "2026-01-12", filename: "Lightcast_Skills_Taxonomy_Changelog_Full.xlsx", records: 278, matched: 278, fileSize: "156 KB", filter: "All Data" },
+];
+
+type ActiveTab = "run" | "history";
+
 const ChangelogScraperPage = () => {
+  const [activeTab, setActiveTab] = useState<ActiveTab>("run");
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [months, setMonths] = useState("");
   const [startMonth, setStartMonth] = useState("");
