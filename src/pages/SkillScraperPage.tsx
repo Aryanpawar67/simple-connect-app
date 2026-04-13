@@ -11,6 +11,9 @@ import {
   ChevronDown,
   ChevronUp,
   Clock,
+  History,
+  FileText,
+  CalendarDays,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -49,7 +52,20 @@ const MOCK_RESULTS = [
   { skill_name: "Mojo", category: "Programming Language", confidence_score: 0.73, popularity: 356, is_new: true, source: "arXiv" },
 ];
 
+const MOCK_HISTORY = [
+  { date: "2026-04-13", rows: 156, newSkills: 38, fileSize: "245 KB", formats: ["CSV", "XLSX"] },
+  { date: "2026-03-28", rows: 142, newSkills: 24, fileSize: "218 KB", formats: ["CSV", "XLSX"] },
+  { date: "2026-03-14", rows: 168, newSkills: 31, fileSize: "261 KB", formats: ["CSV"] },
+  { date: "2026-02-27", rows: 133, newSkills: 19, fileSize: "198 KB", formats: ["CSV", "XLSX"] },
+  { date: "2026-02-12", rows: 151, newSkills: 27, fileSize: "232 KB", formats: ["XLSX"] },
+  { date: "2026-01-30", rows: 129, newSkills: 22, fileSize: "191 KB", formats: ["CSV", "XLSX"] },
+  { date: "2026-01-15", rows: 145, newSkills: 35, fileSize: "224 KB", formats: ["CSV", "XLSX"] },
+];
+
+type ActiveTab = "run" | "history";
+
 const SkillScraperPage = () => {
+  const [activeTab, setActiveTab] = useState<ActiveTab>("run");
   const [mode, setMode] = useState<ScrapeMode>("quick");
   const [selectedSources, setSelectedSources] = useState<string[]>(QUICK_SOURCES);
   const [threshold, setThreshold] = useState(0.25);
@@ -98,6 +114,32 @@ const SkillScraperPage = () => {
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 animate-fade-in">
+      {/* Tab Switcher */}
+      <div className="flex gap-1 bg-secondary rounded-xl p-1">
+        {[
+          { id: "run" as ActiveTab, label: "Run Scrape", icon: Play },
+          { id: "history" as ActiveTab, label: "History", icon: History },
+        ].map((tab) => {
+          const Icon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={cn(
+                "flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all",
+                activeTab === tab.id
+                  ? "bg-card text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Icon className="w-4 h-4" />
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeTab === "run" && (<>
       {/* Mode Selection */}
       <Card className="p-6">
         <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
@@ -336,6 +378,68 @@ const SkillScraperPage = () => {
               </TableBody>
             </Table>
           </div>
+        </Card>
+      )}
+      </>)}
+
+      {/* History Tab */}
+      {activeTab === "history" && (
+        <Card className="animate-slide-up overflow-hidden">
+          <div className="p-6 border-b">
+            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+              Past Scrape Runs
+            </h3>
+            <p className="text-xs text-muted-foreground mt-1">Click a row to view its results</p>
+          </div>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead className="text-right">Skills Found</TableHead>
+                  <TableHead className="text-right">New</TableHead>
+                  <TableHead className="text-right">File Size</TableHead>
+                  <TableHead>Formats</TableHead>
+                  <TableHead></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {MOCK_HISTORY.map((run) => (
+                  <TableRow key={run.date} className="cursor-pointer hover:bg-secondary/50">
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <CalendarDays className="w-4 h-4 text-muted-foreground" />
+                        <span className="font-medium">{run.date}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-sm">{run.rows}</TableCell>
+                    <TableCell className="text-right">
+                      <Badge variant="default" className="text-xs">{run.newSkills} new</Badge>
+                    </TableCell>
+                    <TableCell className="text-right text-sm text-muted-foreground">{run.fileSize}</TableCell>
+                    <TableCell>
+                      <div className="flex gap-1">
+                        {run.formats.map((f) => (
+                          <Badge key={f} variant="secondary" className="text-xs">{f}</Badge>
+                        ))}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                        <Download className="w-4 h-4" />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          {MOCK_HISTORY.length === 0 && (
+            <div className="p-12 text-center">
+              <FileText className="w-10 h-10 text-muted-foreground/40 mx-auto mb-3" />
+              <p className="text-sm text-muted-foreground">No scrapes run yet — start your first scrape</p>
+            </div>
+          )}
         </Card>
       )}
     </div>
