@@ -379,6 +379,7 @@ const SkillScraperPage = () => {
             </Table>
           </div>
         </Card>
+      )}
       </>)}
 
       {/* History Tab */}
