@@ -9,12 +9,21 @@ import {
   CalendarRange,
   CalendarDays,
   Database,
+  History,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 type FilterMode = "all" | "specific" | "range";
 type RunState = "idle" | "loading" | "success" | "empty" | "error";
