@@ -22,3 +22,19 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Backend — generated outputs & sensitive data
+backend/outputs/
+backend/sheets/
+backend/output/
+backend/taxonomy_state.json
+*.xlsx
+*.csv
+
+# Docker volumes & local DB state
+.env

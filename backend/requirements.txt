@@ -1,0 +1,20 @@
+# Web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# Skill Scraper — HTTP & parsing
+httpx[http2]==0.27.0
+beautifulsoup4==4.12.3
+lxml==5.2.1
+feedparser==6.0.11
+
+# Skill Scraper — data processing & output
+pandas==2.2.2
+openpyxl==3.1.2
+rapidfuzz==3.9.3
+python-slugify==8.0.4
+pyyaml==6.0.2
+anyio==4.4.0
+
+# Skill Scraper — database
+psycopg2-binary==2.9.9

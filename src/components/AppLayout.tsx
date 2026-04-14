@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { Search, GitCompareArrows, Menu, X } from "lucide-react";
+import { Search, GitCompareArrows, Menu, X, Database } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface AppLayoutProps {
   children: React.ReactNode;
-  activeTool: "scraper" | "changelog";
-  onToolChange: (tool: "scraper" | "changelog") => void;
+  activeTool: "scraper" | "changelog" | "taxonomy";
+  onToolChange: (tool: "scraper" | "changelog" | "taxonomy") => void;
 }
 
 const navItems = [
@@ -20,6 +20,12 @@ const navItems = [
     label: "Taxonomy Changelog",
     description: "Track official changes",
     icon: GitCompareArrows,
+  },
+  {
+    id: "taxonomy" as const,
+    label: "Taxonomy Manager",
+    description: "Merge & manage master list",
+    icon: Database,
   },
 ];
 
@@ -45,10 +51,10 @@ const AppLayout = ({ children, activeTool, onToolChange }: AppLayoutProps) => {
       >
         <div className="p-5 border-b border-sidebar-border">
           <h1 className="text-lg font-bold text-sidebar-primary-foreground tracking-tight">
-            Skill Tools
+            TaxoTrack
           </h1>
           <p className="text-xs text-sidebar-muted mt-0.5">
-            Discovery & Taxonomy Tracking
+            Skill Discovery & Taxonomy Management
           </p>
         </div>
 

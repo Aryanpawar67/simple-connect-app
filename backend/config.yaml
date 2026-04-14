@@ -1,0 +1,146 @@
+output:
+  sheets_dir: "sheets"  # resolved relative to backend/ by api_bridge.py at runtime
+  formats: ["csv", "xlsx"]
+
+database:
+  enabled: true
+  dsn: "postgresql://skills:skills_pass@localhost:5434/skillsdb"
+
+rate_limits:
+  default_delay_seconds: 1.5
+  between_sources_seconds: 2.0
+
+scraping:
+  user_agent: "SkillScraper/1.0 (research tool; contact@example.com)"
+  request_timeout_seconds: 15
+  max_retries: 3
+  retry_backoff_seconds: 5
+
+sources:
+  github_trending:
+    enabled: true
+    topics:
+      - "ai-tools"
+      - "machine-learning"
+      - "devops"
+      - "web-development"
+      - "llm"
+      - "kubernetes"
+      - "rust"
+      - "typescript"
+      - "platform-engineering"
+    max_results_per_topic: 30
+
+  stackoverflow_tags:
+    enabled: true
+    max_tags: 100
+    sort: "activity"
+
+  hackernews:
+    enabled: true
+    feed_url: "https://hnrss.org/frontpage"
+    max_items: 60
+
+  npm_trending:
+    enabled: true
+    keywords:
+      - "ai"
+      - "llm"
+      - "devops"
+      - "kubernetes"
+      - "typescript"
+      - "machine-learning"
+      - "observability"
+      - "security"
+    max_results_per_keyword: 20
+
+  pypi_trending:
+    enabled: true
+    top_n: 500
+
+  product_hunt:
+    enabled: true
+    feed_url: "https://www.producthunt.com/feed"
+    max_items: 50
+
+  devto:
+    enabled: true
+    tags:
+      - "ai"
+      - "machinelearning"
+      - "devops"
+      - "python"
+      - "typescript"
+      - "kubernetes"
+      - "security"
+      - "rust"
+      - "cloud"
+    max_articles_per_tag: 20
+
+  reddit:
+    enabled: true
+    subreddits:
+      - "programming"
+      - "MachineLearning"
+      - "devops"
+      - "kubernetes"
+      - "rust"
+      - "netsec"
+      - "datascience"
+    max_posts_per_sub: 25
+    sort: "hot"
+
+  arxiv:
+    enabled: true
+    feeds:
+      - "https://rss.arxiv.org/rss/cs.LG"
+      - "https://rss.arxiv.org/rss/cs.SE"
+      - "https://rss.arxiv.org/rss/cs.DC"
+      - "https://rss.arxiv.org/rss/cs.CR"
+    max_items_per_feed: 40
+
+  thoughtworks_radar:
+    enabled: true
+    url: "https://www.thoughtworks.com/radar/a-z"
+
+  cncf_landscape:
+    enabled: true
+    url: "https://raw.githubusercontent.com/cncf/landscape/master/landscape.yml"
+
+  linkedin_jobs:
+    enabled: true
+    search_terms:
+      - "AI engineer"
+      - "MLOps"
+      - "platform engineer"
+      - "DevSecOps"
+      - "cloud architect"
+      - "data engineer"
+    max_results_per_term: 20
+
+  infoq:
+    enabled: true
+    feed_url: "https://feed.infoq.com/"
+    max_items: 50
+
+  dzone:
+    enabled: true
+    feed_url: "https://feeds.dzone.com/home"
+    max_items: 50
+
+  medium:
+    enabled: true
+    tags:
+      - "programming"
+      - "machine-learning"
+      - "devops"
+      - "security"
+      - "cloud-computing"
+      - "kubernetes"
+      - "artificial-intelligence"
+    max_items_per_tag: 15
+
+  github_topics:
+    enabled: true
+    url: "https://github.com/topics"
+    max_topics: 60
