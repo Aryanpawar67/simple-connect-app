@@ -618,16 +618,27 @@ _TAXONOMY_HISTORY_FILE = OUTPUT_DIR / "merge_history.json"
 
 _DB_DSN = _os.environ.get("DATABASE_URL", "")
 if not _DB_DSN:
-    raise RuntimeError(
-        "DATABASE_URL environment variable is not set. "
-        "Set it to your Neon connection string before starting the server."
+    import logging as _logging
+    _logging.warning(
+        "DATABASE_URL is not set — taxonomy and DB endpoints will return 503. "
+        "Set DATABASE_URL to your Neon connection string."
     )
 _DB_CONFIG = {
     "database": {
-        "enabled": True,
+        "enabled": bool(_DB_DSN),
         "dsn": _DB_DSN,
     }
 }
+
+
+def _require_db() -> str:
+    """Return DSN or raise HTTP 503 — use at the start of DB-dependent endpoints."""
+    if not _DB_DSN:
+        raise HTTPException(
+            status_code=503,
+            detail="DATABASE_URL is not configured on this server.",
+        )
+    return _DB_DSN
 
 
 def _read_merge_history() -> list:
@@ -659,17 +670,40 @@ class MergeRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+
+@app.get("/api/health")
+async def health():
+    dsn_set = bool(_DB_DSN)
+    db_ok = False
+    if dsn_set:
+        try:
+            import psycopg2
+            conn = psycopg2.connect(_DB_DSN)
+            conn.close()
+            db_ok = True
+        except Exception as e:
+            db_ok = False
+    return {
+        "status": "ok" if db_ok else "degraded",
+        "database_url_set": dsn_set,
+        "database_connected": db_ok,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Taxonomy Manager — routes
 # ---------------------------------------------------------------------------
 
 @app.get("/api/taxonomy/stats")
 async def taxonomy_stats():
-    return _tax_stats(_DB_DSN)
+    return _tax_stats(_require_db())
 
 
 @app.get("/api/taxonomy/domains")
 async def taxonomy_domains():
-    return _tax_domains(_DB_DSN)
+    return _tax_domains(_require_db())
 
 
 @app.get("/api/taxonomy/compare")
@@ -681,7 +715,7 @@ async def taxonomy_compare():
         db_skills = db.all_skills()
     finally:
         db.close()
-    result = _tax_compare(_DB_DSN, db_skills)
+    result = _tax_compare(_require_db(), db_skills)
     result["master_filename"] = "Neon DB"
     return result
 
@@ -693,7 +727,7 @@ async def taxonomy_merge(body: MergeRequest):
     approved = [s.model_dump() for s in body.approved_skills]
     today = datetime.date.today()
     batch = today.isoformat()
-    added = _tax_merge(_DB_DSN, approved, batch=batch)
+    added = _tax_merge(_require_db(), approved, batch=batch)
     db = _open_db(_DB_CONFIG)
     if db:
         try:
@@ -735,7 +769,7 @@ async def taxonomy_history():
 async def taxonomy_master_download():
     """Generate and stream the full taxonomy as xlsx from Neon."""
     import io as _io
-    xlsx_bytes = _tax_export(_DB_DSN)
+    xlsx_bytes = _tax_export(_require_db())
     today = datetime.date.today().isoformat()
     return StreamingResponse(
         _io.BytesIO(xlsx_bytes),
@@ -753,7 +787,7 @@ async def taxonomy_overview():
         db_skills = db.all_skills()
     finally:
         db.close()
-    return _tax_overview(_DB_DSN, db_skills)
+    return _tax_overview(_require_db(), db_skills)
 
 
 @app.get("/api/taxonomy/new-skills/download")
@@ -769,7 +803,7 @@ async def taxonomy_new_skills_download(format: str = Query("csv", description="c
     finally:
         db.close()
 
-    result = _tax_compare(_DB_DSN, db_skills)
+    result = _tax_compare(_require_db(), db_skills)
     new_skills = result["new_skills"] + result["unmappable"]
 
     if not new_skills:
