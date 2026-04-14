@@ -41,7 +41,9 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 
-from lightcast_changelog_scraper import LightcastChangelogScraper
+# Lazy import — playwright + Chromium are only available in local/Docker envs,
+# not on Vercel serverless. Import deferred to the point of use.
+LightcastChangelogScraper = None
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -162,6 +164,7 @@ def _run_scraper(
       scrape-error — any failure                 {"message"}
     """
     try:
+        from lightcast_changelog_scraper import LightcastChangelogScraper
         scraper = LightcastChangelogScraper(url=CHANGELOG_URL, date_filter=date_filter)
 
         # Step 0 — Launching browser
