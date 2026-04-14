@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import {
   Play,
   Download,
@@ -73,13 +73,14 @@ const PROGRESS_STEPS = [
   "Exporting to Excel…",
 ];
 
-const MOCK_EXPORT_HISTORY = [
-  { date: "2026-04-10", filename: "Lightcast_Skills_Taxonomy_Changelog_Full.xlsx", records: 342, matched: 342, fileSize: "184 KB", filter: "All Data" },
-  { date: "2026-03-15", filename: "Lightcast_Skills_Taxonomy_Changelog_March_2026.xlsx", records: 342, matched: 58, fileSize: "42 KB", filter: "March 2026" },
-  { date: "2026-02-28", filename: "Lightcast_Skills_Taxonomy_Changelog_January_to_February_2026.xlsx", records: 310, matched: 97, fileSize: "68 KB", filter: "Jan–Feb 2026" },
-  { date: "2026-02-01", filename: "Lightcast_Skills_Taxonomy_Changelog_February_2026.xlsx", records: 310, matched: 41, fileSize: "34 KB", filter: "February 2026" },
-  { date: "2026-01-12", filename: "Lightcast_Skills_Taxonomy_Changelog_Full.xlsx", records: 278, matched: 278, fileSize: "156 KB", filter: "All Data" },
-];
+type HistoryEntry = {
+  date: string;
+  filename: string;
+  filter: string;
+  totalRecords: number;
+  matchedRecords: number;
+  fileSize: string;
+};
 
 type ActiveTab = "run" | "history";
 
@@ -91,6 +92,24 @@ const ChangelogScraperPage = () => {
   const [endMonth, setEndMonth] = useState("");
   const [runState, setRunState] = useState<RunState>("idle");
   const [progressStep, setProgressStep] = useState(0);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [totalRecords, setTotalRecords] = useState(0);
+  const [matchedRecords, setMatchedRecords] = useState(0);
+  const [typeCounts, setTypeCounts] = useState<Record<string, number>>({});
+  const [errorMessage, setErrorMessage] = useState("");
+  const esRef = useRef<EventSource | null>(null);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  useEffect(() => {
+    if (activeTab !== "history") return;
+    setHistoryLoading(true);
+    fetch("/api/changelog/history")
+      .then((r) => r.json())
+      .then((data) => setHistory(data))
+      .catch(() => setHistory([]))
+      .finally(() => setHistoryLoading(false));
+  }, [activeTab]);
 
   // Validation
   const monthsError = useMemo(() => {
@@ -119,13 +138,75 @@ const ChangelogScraperPage = () => {
 
   const filename = generateFilename(filterMode, months, startMonth, endMonth);
 
-  const simulateRun = async () => {
-    setRunState("loading");
-    for (let i = 0; i < PROGRESS_STEPS.length; i++) {
-      setProgressStep(i);
-      await new Promise((r) => setTimeout(r, 700 + Math.random() * 800));
+  const runScraper = () => {
+    if (esRef.current) {
+      esRef.current.close();
     }
-    setRunState("success");
+    setRunState("loading");
+    setProgressStep(0);
+    setJobId(null);
+    setErrorMessage("");
+    setTypeCounts({});
+
+    const params = new URLSearchParams({ mode: filterMode, filename });
+    if (filterMode === "specific") params.append("months", months);
+    if (filterMode === "range") {
+      params.append("start", startMonth);
+      params.append("end", endMonth);
+    }
+
+    const es = new EventSource(`/api/changelog/stream?${params}`);
+    esRef.current = es;
+
+    es.addEventListener("step", (e) => {
+      const data = JSON.parse(e.data);
+      setProgressStep(data.step);
+    });
+
+    es.addEventListener("complete", (e) => {
+      const data = JSON.parse(e.data);
+      setJobId(data.jobId);
+      setTotalRecords(data.totalRecords);
+      setMatchedRecords(data.matchedRecords);
+      setTypeCounts(data.typeCounts);
+      setProgressStep(PROGRESS_STEPS.length - 1);
+      setRunState("success");
+      es.close();
+      esRef.current = null;
+    });
+
+    es.addEventListener("scrape-empty", (e) => {
+      const data = JSON.parse(e.data);
+      setTotalRecords(data.totalRecords);
+      setRunState("empty");
+      es.close();
+      esRef.current = null;
+    });
+
+    es.addEventListener("scrape-error", (e) => {
+      const data = JSON.parse(e.data);
+      setErrorMessage(data.message);
+      setRunState("error");
+      es.close();
+      esRef.current = null;
+    });
+
+    es.onerror = () => {
+      setErrorMessage("Could not connect to the backend. Make sure the server is running on port 8000.");
+      setRunState("error");
+      es.close();
+      esRef.current = null;
+    };
+  };
+
+  const handleDownload = () => {
+    if (!jobId) return;
+    const a = document.createElement("a");
+    a.href = `/api/changelog/download/${jobId}`;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   return (
@@ -253,7 +334,7 @@ const ChangelogScraperPage = () => {
       {/* Run Button */}
       <Button
         size="lg"
-        onClick={simulateRun}
+        onClick={runScraper}
         disabled={!isValid || runState === "loading"}
         className="w-full h-12 text-base font-semibold"
       >
@@ -300,19 +381,48 @@ const ChangelogScraperPage = () => {
                 Export Complete
               </h3>
               <p className="text-sm text-muted-foreground mt-1">
-                342 records found · 287 match your filter
+                {totalRecords} records found · {matchedRecords} match your filter
               </p>
-              <div className="flex gap-2 mt-2">
-                <Badge variant="secondary">Added: 45</Badge>
-                <Badge variant="secondary">Removed: 12</Badge>
-                <Badge variant="secondary">Renamed: 8</Badge>
-                <Badge variant="secondary">Consolidated: 3</Badge>
+              <div className="flex flex-wrap gap-2 mt-2">
+                {Object.entries(typeCounts).map(([type, count]) => (
+                  <Badge key={type} variant="secondary">{type}: {count}</Badge>
+                ))}
               </div>
             </div>
-            <Button variant="outline" size="sm">
+            <Button variant="outline" size="sm" onClick={handleDownload}>
               <Download className="w-4 h-4 mr-1.5" />
               {filename || "Download"}
             </Button>
+          </div>
+        </Card>
+      )}
+
+      {/* Empty — filter matched 0 records */}
+      {runState === "empty" && (
+        <Card className="p-6 border-amber-500/30 bg-amber-500/5 animate-slide-up">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-500 mt-0.5 shrink-0" />
+            <div>
+              <h3 className="font-semibold">No Records Matched</h3>
+              <p className="text-sm text-muted-foreground mt-1">
+                No records match your selected filter.
+                {totalRecords > 0 && ` ${totalRecords} total records were found on the page.`}
+                {" "}Try a different date range.
+              </p>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Error */}
+      {runState === "error" && (
+        <Card className="p-6 border-destructive/30 bg-destructive/5 animate-slide-up">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-destructive mt-0.5 shrink-0" />
+            <div>
+              <h3 className="font-semibold text-destructive">Scrape Failed</h3>
+              <p className="text-sm text-muted-foreground mt-1">{errorMessage}</p>
+            </div>
           </div>
         </Card>
       )}
@@ -327,6 +437,16 @@ const ChangelogScraperPage = () => {
             </h3>
             <p className="text-xs text-muted-foreground mt-1">Previously generated changelog files</p>
           </div>
+          {historyLoading ? (
+            <div className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Loading history…
+            </div>
+          ) : history.length === 0 ? (
+            <div className="p-8 text-center text-sm text-muted-foreground">
+              No exports yet. Run the scraper to generate your first file.
+            </div>
+          ) : (
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
@@ -340,8 +460,8 @@ const ChangelogScraperPage = () => {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {MOCK_EXPORT_HISTORY.map((run) => (
-                  <TableRow key={run.date}>
+                {history.map((run, i) => (
+                  <TableRow key={`${run.date}-${i}`}>
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <CalendarDays className="w-4 h-4 text-muted-foreground" />
@@ -351,11 +471,23 @@ const ChangelogScraperPage = () => {
                     <TableCell>
                       <Badge variant="secondary" className="text-xs">{run.filter}</Badge>
                     </TableCell>
-                    <TableCell className="text-right font-mono text-sm">{run.records}</TableCell>
-                    <TableCell className="text-right font-mono text-sm">{run.matched}</TableCell>
+                    <TableCell className="text-right font-mono text-sm">{run.totalRecords}</TableCell>
+                    <TableCell className="text-right font-mono text-sm">{run.matchedRecords}</TableCell>
                     <TableCell className="text-right text-sm text-muted-foreground">{run.fileSize}</TableCell>
                     <TableCell>
-                      <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 w-8 p-0"
+                        onClick={() => {
+                          const a = document.createElement("a");
+                          a.href = `/api/changelog/history/${encodeURIComponent(run.filename)}/download`;
+                          a.download = run.filename;
+                          document.body.appendChild(a);
+                          a.click();
+                          document.body.removeChild(a);
+                        }}
+                      >
                         <Download className="w-4 h-4" />
                       </Button>
                     </TableCell>
@@ -364,6 +496,7 @@ const ChangelogScraperPage = () => {
               </TableBody>
             </Table>
           </div>
+          )}
         </Card>
       )}
     </div>

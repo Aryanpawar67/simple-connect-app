@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Download, RefreshCw, GitMerge, Database, Layers, FolderTree, BookOpen, ChevronDown, ChevronUp, History, FileCheck } from "lucide-react";
+import { Download, RefreshCw, GitMerge, Database, Layers, FolderTree, BookOpen, ChevronDown, ChevronUp, History, FileCheck, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,6 +26,14 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 
 // ---------------------------------------------------------------------------
 
 type ActiveTab = "stats" | "merge" | "history";
+
+interface OverviewData {
+  taxonomy_size: number;
+  scraped_count: number;
+  new_skills_count: number;
+  master_filename: string;
+  is_original: boolean;
+}
 
 interface TaxonomyStats {
   total_skills: number;
@@ -101,6 +109,11 @@ const ALL_CLASSIFICATIONS = [
 const TaxonomyManagerPage = () => {
   const [activeTab, setActiveTab] = useState<ActiveTab>("stats");
 
+  // Overview pipeline
+  const [overview, setOverview] = useState<OverviewData | null>(null);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [overviewError, setOverviewError] = useState("");
+
   // Stats
   const [stats, setStats] = useState<TaxonomyStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
@@ -127,13 +140,40 @@ const TaxonomyManagerPage = () => {
   const [expandedEntry, setExpandedEntry] = useState<string | null>(null);
 
   // ---------------------------------------------------------------------------
-  // Load on tab switch
+  // Load on mount + tab switch
   // ---------------------------------------------------------------------------
+
+  useEffect(() => {
+    loadOverview();
+  }, []);
 
   useEffect(() => {
     if (activeTab === "stats") loadStats();
     if (activeTab === "history") loadHistory();
+    if (activeTab === "merge" && !compareResult && !compareLoading) runCompare();
   }, [activeTab]);
+
+  const loadOverview = async () => {
+    setOverviewLoading(true);
+    setOverviewError("");
+    try {
+      const res = await fetch("/api/taxonomy/overview");
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      setOverview(await res.json());
+    } catch (e: any) {
+      setOverviewError(e.message || "Failed to load overview");
+    } finally {
+      setOverviewLoading(false);
+    }
+  };
+
+  const downloadNewSkills = (fmt: "csv" | "xlsx") => {
+    window.open(`/api/taxonomy/new-skills/download?format=${fmt}`, "_blank");
+  };
+
+  const downloadFullTaxonomy = () => {
+    window.open("/api/taxonomy/master/download", "_blank");
+  };
 
   const loadStats = async () => {
     setStatsLoading(true);
@@ -749,8 +789,65 @@ const TaxonomyManagerPage = () => {
   // Main render
   // ---------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // Overview pipeline card
+  // ---------------------------------------------------------------------------
+
+  const renderOverview = () => {
+    if (overviewLoading) return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground px-1">
+        <RefreshCw className="w-4 h-4 animate-spin" /> Loading pipeline stats…
+      </div>
+    );
+    if (overviewError) return (
+      <div className="rounded-lg bg-destructive/10 text-destructive px-4 py-3 text-sm">{overviewError}</div>
+    );
+    if (!overview) return null;
+
+    const steps = [
+      { label: "In Taxonomy", value: overview.taxonomy_size.toLocaleString(), color: "text-indigo-600", bg: "bg-indigo-50 border-indigo-200" },
+      { label: "Scraped", value: overview.scraped_count.toLocaleString(), color: "text-amber-600", bg: "bg-amber-50 border-amber-200" },
+      { label: "New Found", value: overview.new_skills_count.toLocaleString(), color: "text-emerald-600", bg: "bg-emerald-50 border-emerald-200" },
+    ];
+
+    return (
+      <Card className="p-4">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          {/* Pipeline steps */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {steps.map((step, i) => (
+              <div key={step.label} className="flex items-center gap-2">
+                <div className={`rounded-lg border px-4 py-2.5 text-center min-w-[110px] ${step.bg}`}>
+                  <div className={`text-xl font-bold ${step.color}`}>{step.value}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">{step.label}</div>
+                </div>
+                {i < steps.length - 1 && <ArrowRight className="w-4 h-4 text-muted-foreground shrink-0" />}
+              </div>
+            ))}
+          </div>
+
+          {/* Download buttons */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button variant="outline" size="sm" onClick={() => downloadNewSkills("csv")}
+              disabled={overview.new_skills_count === 0}>
+              <Download className="w-3.5 h-3.5 mr-1.5" />New Skills (CSV)
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => downloadNewSkills("xlsx")}
+              disabled={overview.new_skills_count === 0}>
+              <Download className="w-3.5 h-3.5 mr-1.5" />New Skills (XLSX)
+            </Button>
+            <Button variant="outline" size="sm" onClick={downloadFullTaxonomy}>
+              <Download className="w-3.5 h-3.5 mr-1.5" />Full Taxonomy
+            </Button>
+          </div>
+        </div>
+      </Card>
+    );
+  };
+
   return (
     <div className="space-y-6">
+      {renderOverview()}
       <div className="flex gap-1 border-b">
         {([
           { id: "stats", label: "Taxonomy Stats" },

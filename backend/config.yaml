@@ -4,7 +4,7 @@ output:
 
 database:
   enabled: true
-  dsn: "postgresql://neondb_owner:npg_W9CIMOV8PARu@ep-orange-recipe-a1j36e4k-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
+  dsn: ""  # set via DATABASE_URL env var — loaded by api_bridge.py at startup
 
 rate_limits:
   default_delay_seconds: 1.5

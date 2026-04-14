@@ -19,6 +19,7 @@ Taxonomy Manager:
   GET /api/taxonomy/download/{job_id}    — Download merged xlsx
 """
 
+import re
 import sys
 import uuid
 import json
@@ -28,6 +29,13 @@ import asyncio
 import subprocess
 from pathlib import Path
 from typing import Optional, List
+
+# Load .env if present (local dev) — no-op if file absent or python-dotenv not installed
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,12 +48,34 @@ from lightcast_changelog_scraper import LightcastChangelogScraper
 # ---------------------------------------------------------------------------
 app = FastAPI(title="Lightcast Scraper API")
 
+import os as _os_early
+
+_RAW_ORIGINS = _os_early.environ.get(
+    "ALLOWED_ORIGINS",
+    "http://localhost:5173,http://localhost:3000",
+)
+_ALLOWED_ORIGINS = [o.strip() for o in _RAW_ORIGINS.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _safe_filename(filename: str, base_dir: Path) -> Path:
+    """
+    Strip any directory components from a user-supplied filename and verify
+    the resolved path stays inside base_dir. Raises HTTP 400 on traversal attempt.
+    """
+    name = Path(filename).name
+    if not name or name in (".", ".."):
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+    resolved = (base_dir / name).resolve()
+    if resolved.parent != base_dir.resolve():
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+    return resolved
 
 import datetime
 
@@ -217,7 +247,9 @@ async def changelog_stream(
     then emit a terminal event (complete | scrape-empty | scrape-error).
     """
     job_id = str(uuid.uuid4())
-    output_path = str(OUTPUT_DIR / filename)
+    safe_path = _safe_filename(filename, OUTPUT_DIR)
+    output_path = str(safe_path)
+    filename = safe_path.name          # normalised, no traversal
     msg_queue: queue.Queue = queue.Queue()
 
     # Resolve date filter
@@ -293,12 +325,12 @@ async def changelog_history():
 @app.get("/api/changelog/history/{filename}/download")
 async def changelog_history_download(filename: str):
     """Download a historical changelog export by filename."""
-    path = OUTPUT_DIR / filename
+    path = _safe_filename(filename, OUTPUT_DIR)
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found.")
     return FileResponse(
         path=str(path),
-        filename=filename,
+        filename=path.name,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
@@ -548,9 +580,13 @@ async def skills_history():
 @app.get("/api/skills/history/{run_date}/download")
 async def skills_history_download(run_date: str, format: str = Query("csv")):
     """Download a historical sheet by date (e.g. 2026-04-09)."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", run_date):
+        raise HTTPException(status_code=400, detail="run_date must be YYYY-MM-DD.")
     fmt = format.lower()
     ext = "xlsx" if fmt == "xlsx" else "csv"
-    file_path = SKILL_SCRAPER_SHEETS / f"{run_date}.{ext}"
+    file_path = (SKILL_SCRAPER_SHEETS / f"{run_date}.{ext}").resolve()
+    if file_path.parent != SKILL_SCRAPER_SHEETS.resolve():
+        raise HTTPException(status_code=400, detail="Invalid date.")
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"No {ext.upper()} sheet for {run_date}.")
     media = (
@@ -566,58 +602,32 @@ async def skills_history_download(run_date: str, format: str = Query("csv")):
 # ---------------------------------------------------------------------------
 
 from pydantic import BaseModel
-from taxonomy.reader import load_taxonomy, get_taxonomy_stats, get_domains_index
-from taxonomy.merger import compare_skills, apply_merge
 from db.client import open_db as _open_db
-
-# Original source-of-truth — never overwritten
-# Use TAXONOMY_PATH env var on Vercel; fall back to repo-relative path locally
-import os as _os
-_TAXONOMY_ORIGINAL = Path(
-    _os.environ.get("TAXONOMY_PATH", str(_BACKEND_DIR.parent / "iMocha Gold Taxonomy_v1.xlsx"))
+from db.taxonomy_db import (
+    get_stats      as _tax_stats,
+    get_domains_index as _tax_domains,
+    compare_with_skills as _tax_compare,
+    merge_skills   as _tax_merge,
+    get_overview   as _tax_overview,
+    export_to_excel as _tax_export,
 )
 
-# State file: tracks which file is the current living master
-_TAXONOMY_STATE_FILE = _BACKEND_DIR / "taxonomy_state.json"
+import os as _os
 
-# Merge history: one entry per merge run
 _TAXONOMY_HISTORY_FILE = OUTPUT_DIR / "merge_history.json"
 
-# In-memory job store for download links
-_taxonomy_jobs: dict = {}
-
-# Use DATABASE_URL env var on Vercel; fall back to local Docker DSN
-_DB_DSN = _os.environ.get(
-    "DATABASE_URL",
-    "postgresql://neondb_owner:npg_W9CIMOV8PARu@ep-orange-recipe-a1j36e4k-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require",
-)
+_DB_DSN = _os.environ.get("DATABASE_URL", "")
+if not _DB_DSN:
+    raise RuntimeError(
+        "DATABASE_URL environment variable is not set. "
+        "Set it to your Neon connection string before starting the server."
+    )
 _DB_CONFIG = {
     "database": {
         "enabled": True,
         "dsn": _DB_DSN,
     }
 }
-
-
-def _get_master_path() -> Path:
-    """Return the current living master path (falls back to original if no state exists)."""
-    if _TAXONOMY_STATE_FILE.exists():
-        try:
-            state = json.loads(_TAXONOMY_STATE_FILE.read_text())
-            p = Path(state.get("master_path", ""))
-            if p.exists():
-                return p
-        except Exception:
-            pass
-    return _TAXONOMY_ORIGINAL
-
-
-def _set_master_path(path: Path) -> None:
-    """Persist the new master path to the state file."""
-    _TAXONOMY_STATE_FILE.write_text(json.dumps({
-        "master_path": str(path),
-        "original_path": str(_TAXONOMY_ORIGINAL),
-    }, indent=2))
 
 
 def _read_merge_history() -> list:
@@ -654,36 +664,16 @@ class MergeRequest(BaseModel):
 
 @app.get("/api/taxonomy/stats")
 async def taxonomy_stats():
-    """Return statistics about the current living master taxonomy."""
-    master = _get_master_path()
-    if not master.exists():
-        raise HTTPException(status_code=404, detail="Taxonomy file not found.")
-    data = load_taxonomy(master)
-    stats = get_taxonomy_stats(data)
-    stats["master_filename"] = master.name
-    stats["is_original"] = (master == _TAXONOMY_ORIGINAL)
-    return stats
+    return _tax_stats(_DB_DSN)
 
 
 @app.get("/api/taxonomy/domains")
 async def taxonomy_domains():
-    """Return domain -> [subdomains] index for UI dropdowns."""
-    master = _get_master_path()
-    if not master.exists():
-        raise HTTPException(status_code=404, detail="Taxonomy file not found.")
-    data = load_taxonomy(master)
-    return get_domains_index(data)
+    return _tax_domains(_DB_DSN)
 
 
 @app.get("/api/taxonomy/compare")
 async def taxonomy_compare():
-    """Compare all DB skills against the current living master taxonomy."""
-    master = _get_master_path()
-    if not master.exists():
-        raise HTTPException(status_code=404, detail="Taxonomy file not found.")
-
-    data = load_taxonomy(master)
-
     db = _open_db(_DB_CONFIG)
     if db is None:
         raise HTTPException(status_code=503, detail="Could not connect to skills database.")
@@ -691,73 +681,42 @@ async def taxonomy_compare():
         db_skills = db.all_skills()
     finally:
         db.close()
-
-    result = compare_skills(data, db_skills)
-    result["master_filename"] = master.name
+    result = _tax_compare(_DB_DSN, db_skills)
+    result["master_filename"] = "Neon DB"
     return result
 
 
 @app.post("/api/taxonomy/merge")
 async def taxonomy_merge(body: MergeRequest):
-    """
-    Append approved skills to the living master taxonomy.
-    The merged file becomes the new master for future comparisons.
-    Appends an entry to merge_history.json.
-    """
-    master = _get_master_path()
-    if not master.exists():
-        raise HTTPException(status_code=404, detail="Taxonomy file not found.")
     if not body.approved_skills:
         raise HTTPException(status_code=400, detail="No skills provided.")
-
     approved = [s.model_dump() for s in body.approved_skills]
-    out_path, added = apply_merge(master, approved, OUTPUT_DIR)
-
-    # Promote merged file to new living master
-    _set_master_path(out_path)
-
     today = datetime.date.today()
-
-    # Mark skills as merged in the DB (grouped by domain/subdomain)
+    batch = today.isoformat()
+    added = _tax_merge(_DB_DSN, approved, batch=batch)
     db = _open_db(_DB_CONFIG)
     if db:
         try:
             from collections import defaultdict
             groups: dict = defaultdict(list)
             for s in approved:
-                key = (s.get("proposed_domain",""), s.get("proposed_subdomain",""))
+                key = (s.get("proposed_domain", ""), s.get("proposed_subdomain", ""))
                 groups[key].append(s["skill_name"])
             for (domain, subdomain), names in groups.items():
                 db.mark_taxonomy_merged(names, domain, subdomain, today)
         finally:
             db.close()
-
-    # Record in history
     _append_merge_history({
-        "date": today.isoformat(),
+        "date": batch,
         "added_count": added,
-        "filename": out_path.name,
-        "previous_master": master.name,
+        "batch": batch,
         "skills": [s["skill_name"] for s in approved],
     })
-
-    job_id = str(uuid.uuid4())
-    _taxonomy_jobs[job_id] = {
-        "path": str(out_path),
-        "filename": out_path.name,
-    }
-
-    return {
-        "job_id": job_id,
-        "filename": out_path.name,
-        "added_count": added,
-        "new_master": out_path.name,
-    }
+    return {"added_count": added, "new_master": "Neon DB", "batch": batch}
 
 
 @app.get("/api/taxonomy/merged-stats")
 async def taxonomy_merged_stats():
-    """Return DB-level stats on which scraped skills have been merged into the taxonomy."""
     db = _open_db(_DB_CONFIG)
     if db is None:
         raise HTTPException(status_code=503, detail="Could not connect to skills database.")
@@ -769,43 +728,89 @@ async def taxonomy_merged_stats():
 
 @app.get("/api/taxonomy/history")
 async def taxonomy_history():
-    """Return the list of past merge runs, newest first."""
-    history = _read_merge_history()
-    enriched = []
-    for entry in history:
-        path = OUTPUT_DIR / entry["filename"]
-        size_str = ""
-        if path.exists():
-            kb = path.stat().st_size / 1024
-            size_str = f"{kb:.0f} KB" if kb < 1024 else f"{kb / 1024:.1f} MB"
-        enriched.append({**entry, "file_exists": path.exists(), "file_size": size_str})
-    return enriched
+    return _read_merge_history()
 
 
-@app.get("/api/taxonomy/history/{filename}/download")
-async def taxonomy_history_download(filename: str):
-    """Download a historical merged taxonomy file by filename."""
-    path = OUTPUT_DIR / filename
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="File not found.")
-    return FileResponse(
-        path=str(path),
-        filename=filename,
+@app.get("/api/taxonomy/master/download")
+async def taxonomy_master_download():
+    """Generate and stream the full taxonomy as xlsx from Neon."""
+    import io as _io
+    xlsx_bytes = _tax_export(_DB_DSN)
+    today = datetime.date.today().isoformat()
+    return StreamingResponse(
+        _io.BytesIO(xlsx_bytes),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="iMocha_Taxonomy_{today}.xlsx"'},
     )
 
 
-@app.get("/api/taxonomy/download/{job_id}")
-async def taxonomy_download(job_id: str):
-    """Download the merged taxonomy xlsx produced by a merge job."""
-    if job_id not in _taxonomy_jobs:
-        raise HTTPException(status_code=404, detail="Job not found or has expired.")
-    job = _taxonomy_jobs[job_id]
-    return FileResponse(
-        path=job["path"],
-        filename=job["filename"],
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+@app.get("/api/taxonomy/overview")
+async def taxonomy_overview():
+    db = _open_db(_DB_CONFIG)
+    if db is None:
+        raise HTTPException(status_code=503, detail="Could not connect to skills database.")
+    try:
+        db_skills = db.all_skills()
+    finally:
+        db.close()
+    return _tax_overview(_DB_DSN, db_skills)
+
+
+@app.get("/api/taxonomy/new-skills/download")
+async def taxonomy_new_skills_download(format: str = Query("csv", description="csv or xlsx")):
+    import io as _io
+    import csv as csv_mod
+
+    db = _open_db(_DB_CONFIG)
+    if db is None:
+        raise HTTPException(status_code=503, detail="Could not connect to skills database.")
+    try:
+        db_skills = db.all_skills()
+    finally:
+        db.close()
+
+    result = _tax_compare(_DB_DSN, db_skills)
+    new_skills = result["new_skills"] + result["unmappable"]
+
+    if not new_skills:
+        raise HTTPException(status_code=404, detail="No new skills found.")
+
+    columns = [
+        "skill_name", "proposed_domain", "proposed_subdomain", "proposed_cluster",
+        "proposed_classification", "proposed_criticality",
+        "confidence_score", "source", "category", "subcategory", "skill_type",
+    ]
+    today = datetime.date.today().isoformat()
+
+    fmt = format.lower()
+    if fmt == "xlsx":
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "New Skills"
+        ws.append(columns)
+        for skill in new_skills:
+            ws.append([skill.get(c, "") for c in columns])
+        buf = _io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        filename = f"new_skills_{today}.xlsx"
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    else:
+        buf = _io.StringIO()
+        writer = csv_mod.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(new_skills)
+        csv_bytes = buf.getvalue().encode("utf-8")
+        filename = f"new_skills_{today}.csv"
+        return StreamingResponse(
+            iter([csv_bytes]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
 
 # ---------------------------------------------------------------------------

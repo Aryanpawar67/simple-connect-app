@@ -14,9 +14,17 @@ Usage:
 import argparse
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from datetime import date
+
+# Load .env if present (local dev)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass
 
 # Ensure backend/ root is on the path (scraper/, processor/, output/, db/ live here)
 _BACKEND_DIR = Path(__file__).parent
@@ -60,6 +68,13 @@ async def run_bridge(sources: list, threshold: float, formats: list):
     config["output"]["sheets_dir"] = str(_BACKEND_DIR / "sheets")
     # Override output formats from caller
     config["output"]["formats"] = formats
+    # Inject DATABASE_URL from env — overrides the (now empty) dsn in config.yaml
+    db_url = os.environ.get("DATABASE_URL", "")
+    if db_url:
+        config["database"]["dsn"] = db_url
+    elif not config["database"].get("dsn"):
+        emit("error", message="DATABASE_URL is not set — DB unavailable, falling back to CSV.")
+        config["database"]["enabled"] = False
 
     ALL_SCRAPER_CLASSES = [
         GitHubTrendingScraper, StackOverflowTagsScraper, HackerNewsScraper,
