@@ -571,7 +571,11 @@ from taxonomy.merger import compare_skills, apply_merge
 from db.client import open_db as _open_db
 
 # Original source-of-truth — never overwritten
-_TAXONOMY_ORIGINAL = Path("/Users/aryan/Desktop/simple-connect-app/iMocha Gold Taxonomy_v1.xlsx")
+# Use TAXONOMY_PATH env var on Vercel; fall back to repo-relative path locally
+import os as _os
+_TAXONOMY_ORIGINAL = Path(
+    _os.environ.get("TAXONOMY_PATH", str(_BACKEND_DIR.parent / "iMocha Gold Taxonomy_v1.xlsx"))
+)
 
 # State file: tracks which file is the current living master
 _TAXONOMY_STATE_FILE = _BACKEND_DIR / "taxonomy_state.json"
@@ -582,10 +586,15 @@ _TAXONOMY_HISTORY_FILE = OUTPUT_DIR / "merge_history.json"
 # In-memory job store for download links
 _taxonomy_jobs: dict = {}
 
+# Use DATABASE_URL env var on Vercel; fall back to local Docker DSN
+_DB_DSN = _os.environ.get(
+    "DATABASE_URL",
+    "postgresql://skills:skills_pass@localhost:5434/skillsdb",
+)
 _DB_CONFIG = {
     "database": {
         "enabled": True,
-        "dsn": "postgresql://skills:skills_pass@localhost:5434/skillsdb",
+        "dsn": _DB_DSN,
     }
 }
 

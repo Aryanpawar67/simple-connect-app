@@ -33,8 +33,9 @@ backend/outputs/
 backend/sheets/
 backend/output/
 backend/taxonomy_state.json
-*.xlsx
 *.csv
+# Allow the master taxonomy xlsx to be committed
+!iMocha Gold Taxonomy_v1.xlsx
 
 # Docker volumes & local DB state
 .env
