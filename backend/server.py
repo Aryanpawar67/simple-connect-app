@@ -81,7 +81,12 @@ def _safe_filename(filename: str, base_dir: Path) -> Path:
 
 import datetime
 
-OUTPUT_DIR = Path(__file__).parent / "outputs"
+# On Vercel the function directory is read-only; writable space is /tmp.
+_ON_VERCEL = _os_early.environ.get("VERCEL") == "1"
+OUTPUT_DIR = (
+    Path("/tmp/taxotrack/outputs") if _ON_VERCEL
+    else Path(__file__).parent / "outputs"
+)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 CHANGELOG_URL = "https://docs.lightcast.dev/updates/skills-taxonomy-changelog"
@@ -344,7 +349,10 @@ async def changelog_history_download(filename: str):
 
 _BACKEND_DIR = Path(__file__).parent
 SKILL_SCRAPER_BRIDGE = _BACKEND_DIR / "api_bridge.py"
-SKILL_SCRAPER_SHEETS = _BACKEND_DIR / "sheets"
+SKILL_SCRAPER_SHEETS = (
+    Path("/tmp/taxotrack/sheets") if _ON_VERCEL
+    else _BACKEND_DIR / "sheets"
+)
 
 # Display name (frontend) → SOURCE_ID (bridge)
 _SOURCE_NAME_TO_ID: dict[str, str] = {
