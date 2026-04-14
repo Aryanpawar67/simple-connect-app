@@ -17,26 +17,36 @@ log = logging.getLogger(__name__)
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS skills (
-    id               SERIAL PRIMARY KEY,
-    skill_name       TEXT    NOT NULL,
-    normalized_name  TEXT    NOT NULL UNIQUE,
-    category         TEXT    NOT NULL DEFAULT '',
-    subcategory      TEXT    NOT NULL DEFAULT '',
-    skill_type       TEXT    NOT NULL DEFAULT '',
-    source           TEXT    NOT NULL DEFAULT '',
-    confidence_score REAL    NOT NULL DEFAULT 0.0,
-    popularity       INTEGER NOT NULL DEFAULT 0,
-    language         TEXT    NOT NULL DEFAULT '',
-    tags             TEXT    NOT NULL DEFAULT '',
-    first_seen       DATE    NOT NULL,
-    last_seen        DATE    NOT NULL,
-    run_count        INTEGER NOT NULL DEFAULT 1
+    id                  SERIAL PRIMARY KEY,
+    skill_name          TEXT    NOT NULL,
+    normalized_name     TEXT    NOT NULL UNIQUE,
+    category            TEXT    NOT NULL DEFAULT '',
+    subcategory         TEXT    NOT NULL DEFAULT '',
+    skill_type          TEXT    NOT NULL DEFAULT '',
+    source              TEXT    NOT NULL DEFAULT '',
+    confidence_score    REAL    NOT NULL DEFAULT 0.0,
+    popularity          INTEGER NOT NULL DEFAULT 0,
+    language            TEXT    NOT NULL DEFAULT '',
+    tags                TEXT    NOT NULL DEFAULT '',
+    first_seen          DATE    NOT NULL,
+    last_seen           DATE    NOT NULL,
+    run_count           INTEGER NOT NULL DEFAULT 1,
+    taxonomy_merged_at  DATE             DEFAULT NULL,
+    taxonomy_domain     TEXT    NOT NULL DEFAULT '',
+    taxonomy_subdomain  TEXT    NOT NULL DEFAULT ''
 );
 
-CREATE INDEX IF NOT EXISTS idx_skills_normalized  ON skills (normalized_name);
-CREATE INDEX IF NOT EXISTS idx_skills_first_seen  ON skills (first_seen);
-CREATE INDEX IF NOT EXISTS idx_skills_category    ON skills (category);
-CREATE INDEX IF NOT EXISTS idx_skills_confidence  ON skills (confidence_score);
+CREATE INDEX IF NOT EXISTS idx_skills_normalized    ON skills (normalized_name);
+CREATE INDEX IF NOT EXISTS idx_skills_first_seen    ON skills (first_seen);
+CREATE INDEX IF NOT EXISTS idx_skills_category      ON skills (category);
+CREATE INDEX IF NOT EXISTS idx_skills_confidence    ON skills (confidence_score);
+CREATE INDEX IF NOT EXISTS idx_skills_merged        ON skills (taxonomy_merged_at);
+"""
+
+_ALTER_DDL = """
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS taxonomy_merged_at DATE DEFAULT NULL;
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS taxonomy_domain    TEXT NOT NULL DEFAULT '';
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS taxonomy_subdomain TEXT NOT NULL DEFAULT '';
 """
 
 
@@ -65,9 +75,11 @@ class SkillsDB:
         self._conn.autocommit = False
 
     def init_schema(self) -> None:
-        """Create tables / indexes if they don't exist yet (idempotent)."""
+        """Create tables / indexes if they don't exist yet (idempotent).
+        Also runs ALTER TABLE to add new columns to existing tables."""
         with self._conn.cursor() as cur:
             cur.execute(_DDL)
+            cur.execute(_ALTER_DDL)
         self._conn.commit()
         log.debug("DB schema ready.")
 
@@ -213,10 +225,56 @@ class SkillsDB:
         with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 "SELECT id, skill_name, normalized_name, category, subcategory, "
-                "skill_type, source, confidence_score, popularity "
+                "skill_type, source, confidence_score, popularity, "
+                "taxonomy_merged_at, taxonomy_domain, taxonomy_subdomain "
                 "FROM skills ORDER BY skill_name"
             )
             return [dict(r) for r in cur.fetchall()]
+
+    def mark_taxonomy_merged(self, skill_names: list[str], domain: str, subdomain: str, merged_date) -> int:
+        """
+        Mark skills as merged into the taxonomy.
+        Sets taxonomy_merged_at, taxonomy_domain, taxonomy_subdomain for each skill_name.
+        Returns the count of rows updated.
+        """
+        if not skill_names:
+            return 0
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE skills
+                SET taxonomy_merged_at = %s,
+                    taxonomy_domain    = CASE WHEN %s <> '' THEN %s ELSE taxonomy_domain END,
+                    taxonomy_subdomain = CASE WHEN %s <> '' THEN %s ELSE taxonomy_subdomain END
+                WHERE skill_name = ANY(%s)
+                  AND taxonomy_merged_at IS NULL
+                """,
+                (merged_date, domain, domain, subdomain, subdomain, skill_names),
+            )
+            updated = cur.rowcount
+        self._conn.commit()
+        return updated
+
+    def merged_skills_summary(self) -> dict:
+        """Return count of merged vs unmerged skills and per-date breakdown."""
+        with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    COUNT(*) FILTER (WHERE taxonomy_merged_at IS NOT NULL) AS merged,
+                    COUNT(*) FILTER (WHERE taxonomy_merged_at IS NULL)     AS not_merged,
+                    COUNT(*)                                                AS total
+                FROM skills
+            """)
+            totals = dict(cur.fetchone())
+            cur.execute("""
+                SELECT taxonomy_merged_at::text AS date, COUNT(*) AS count
+                FROM skills
+                WHERE taxonomy_merged_at IS NOT NULL
+                GROUP BY taxonomy_merged_at
+                ORDER BY taxonomy_merged_at DESC
+            """)
+            totals["by_date"] = [dict(r) for r in cur.fetchall()]
+        return totals
 
 
 # ------------------------------------------------------------------

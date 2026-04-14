@@ -716,9 +716,25 @@ async def taxonomy_merge(body: MergeRequest):
     # Promote merged file to new living master
     _set_master_path(out_path)
 
+    today = datetime.date.today()
+
+    # Mark skills as merged in the DB (grouped by domain/subdomain)
+    db = _open_db(_DB_CONFIG)
+    if db:
+        try:
+            from collections import defaultdict
+            groups: dict = defaultdict(list)
+            for s in approved:
+                key = (s.get("proposed_domain",""), s.get("proposed_subdomain",""))
+                groups[key].append(s["skill_name"])
+            for (domain, subdomain), names in groups.items():
+                db.mark_taxonomy_merged(names, domain, subdomain, today)
+        finally:
+            db.close()
+
     # Record in history
     _append_merge_history({
-        "date": datetime.date.today().isoformat(),
+        "date": today.isoformat(),
         "added_count": added,
         "filename": out_path.name,
         "previous_master": master.name,
@@ -737,6 +753,18 @@ async def taxonomy_merge(body: MergeRequest):
         "added_count": added,
         "new_master": out_path.name,
     }
+
+
+@app.get("/api/taxonomy/merged-stats")
+async def taxonomy_merged_stats():
+    """Return DB-level stats on which scraped skills have been merged into the taxonomy."""
+    db = _open_db(_DB_CONFIG)
+    if db is None:
+        raise HTTPException(status_code=503, detail="Could not connect to skills database.")
+    try:
+        return db.merged_skills_summary()
+    finally:
+        db.close()
 
 
 @app.get("/api/taxonomy/history")
