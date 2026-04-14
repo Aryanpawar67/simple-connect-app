@@ -4,7 +4,7 @@ output:
 
 database:
   enabled: true
-  dsn: "postgresql://skills:skills_pass@localhost:5434/skillsdb"
+  dsn: "postgresql://neondb_owner:npg_W9CIMOV8PARu@ep-orange-recipe-a1j36e4k-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
 
 rate_limits:
   default_delay_seconds: 1.5

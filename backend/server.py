@@ -589,7 +589,7 @@ _taxonomy_jobs: dict = {}
 # Use DATABASE_URL env var on Vercel; fall back to local Docker DSN
 _DB_DSN = _os.environ.get(
     "DATABASE_URL",
-    "postgresql://skills:skills_pass@localhost:5434/skillsdb",
+    "postgresql://neondb_owner:npg_W9CIMOV8PARu@ep-orange-recipe-a1j36e4k-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require",
 )
 _DB_CONFIG = {
     "database": {
