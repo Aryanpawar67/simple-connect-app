@@ -405,58 +405,40 @@ def _run_skill_bridge(
       skill-error   {"message": str}
     """
     try:
-        cmd = [
-            sys.executable,
-            str(SKILL_SCRAPER_BRIDGE),
-            "--threshold", str(threshold),
-            "--formats", ",".join(formats),
-        ]
-        if sources:
-            cmd += ["--sources", ",".join(sources)]
+        # Ensure backend dir is on path so api_bridge imports work
+        if str(_BACKEND_DIR) not in sys.path:
+            sys.path.insert(0, str(_BACKEND_DIR))
 
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=str(_BACKEND_DIR),
-        )
+        from api_bridge import run_bridge
 
-        for line in proc.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        # Wrap the queue so events from run_bridge are translated before enqueue
+        class _TranslatingQueue:
+            def put(self, item):
+                event, data_str = item
+                try:
+                    msg = json.loads(data_str)
+                except json.JSONDecodeError:
+                    msg = {}
 
-            event = msg.pop("event", None)
-            if event is None:
-                continue
+                # Translate SOURCE_IDs back to display names for the frontend
+                if "source" in msg:
+                    msg["source"] = _SOURCE_ID_TO_NAME.get(msg["source"], msg["source"])
 
-            # Translate SOURCE_IDs back to display names for the frontend
-            if "source" in msg:
-                msg["source"] = _SOURCE_ID_TO_NAME.get(msg["source"], msg["source"])
+                if event == "complete":
+                    # Store file paths so download endpoint can serve them
+                    _skill_jobs[job_id] = {
+                        "csv":  msg.pop("csvPath", ""),
+                        "xlsx": msg.pop("xlsxPath", ""),
+                    }
+                    msg["jobId"] = job_id
+                    q.put(("complete", json.dumps(msg)))
+                elif event == "error":
+                    q.put(("skill-error", json.dumps(msg)))
+                else:
+                    q.put((event, json.dumps(msg)))
 
-            if event == "complete":
-                # Store file paths so download endpoint can serve them
-                _skill_jobs[job_id] = {
-                    "csv":  msg.pop("csvPath", ""),
-                    "xlsx": msg.pop("xlsxPath", ""),
-                }
-                msg["jobId"] = job_id
-                q.put(("complete", json.dumps(msg)))
-            elif event == "error":
-                q.put(("skill-error", json.dumps(msg)))
-            else:
-                q.put((event, json.dumps(msg)))
-
-        proc.wait()
-
-        if proc.returncode != 0 and job_id not in _skill_jobs:
-            stderr = proc.stderr.read() if proc.stderr else ""
-            q.put(("skill-error", json.dumps({"message": stderr or "Bridge process failed"})))
+        translating_q = _TranslatingQueue()
+        asyncio.run(run_bridge(sources, threshold, formats, event_queue=translating_q))
 
     except Exception as exc:
         q.put(("skill-error", json.dumps({"message": str(exc)})))

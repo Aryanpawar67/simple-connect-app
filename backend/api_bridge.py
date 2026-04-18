@@ -36,7 +36,7 @@ def emit(event: str, **kwargs):
     print(json.dumps({"event": event, **kwargs}), flush=True)
 
 
-async def run_bridge(sources: list, threshold: float, formats: list):
+async def run_bridge(sources: list, threshold: float, formats: list, event_queue=None):
     import yaml
     from scraper.github_trending import GitHubTrendingScraper
     from scraper.stackoverflow_tags import StackOverflowTagsScraper
@@ -60,6 +60,13 @@ async def run_bridge(sources: list, threshold: float, formats: list):
     from output.writer import write_output
     from db.client import open_db
 
+    # Local emit: route to queue when provided, otherwise print to stdout
+    def _emit(event: str, **kwargs):
+        if event_queue is not None:
+            event_queue.put((event, json.dumps(kwargs)))
+        else:
+            emit(event, **kwargs)
+
     config_path = _BACKEND_DIR / "config.yaml"
     with open(config_path) as f:
         config = yaml.safe_load(f)
@@ -73,7 +80,7 @@ async def run_bridge(sources: list, threshold: float, formats: list):
     if db_url:
         config["database"]["dsn"] = db_url
     elif not config["database"].get("dsn"):
-        emit("error", message="DATABASE_URL is not set — DB unavailable, falling back to CSV.")
+        _emit("error", message="DATABASE_URL is not set — DB unavailable, falling back to CSV.")
         config["database"]["enabled"] = False
 
     ALL_SCRAPER_CLASSES = [
@@ -93,31 +100,31 @@ async def run_bridge(sources: list, threshold: float, formats: list):
     # ── Scraping phase ────────────────────────────────────────────────────────
     all_records = []
     for scraper in active:
-        emit("source-start", source=scraper.SOURCE_ID)
+        _emit("source-start", source=scraper.SOURCE_ID)
         try:
             records = await scraper.scrape()
             all_records.extend(records)
-            emit("source-done", source=scraper.SOURCE_ID, count=len(records))
+            _emit("source-done", source=scraper.SOURCE_ID, count=len(records))
         except Exception as exc:
-            emit("source-error", source=scraper.SOURCE_ID, error=str(exc))
+            _emit("source-error", source=scraper.SOURCE_ID, error=str(exc))
 
     raw_count = len(all_records)
 
     # ── Processing phase ──────────────────────────────────────────────────────
-    emit("processing", message="Classifying skills…")
+    _emit("processing", message="Classifying skills…")
     records = [classify(r) for r in all_records]
 
-    emit("processing", message="Deduplicating…")
+    _emit("processing", message="Deduplicating…")
     records = deduplicate(records)
     dedup_count = len(records)
 
-    emit("processing", message="Scoring confidence…")
+    _emit("processing", message="Scoring confidence…")
     records = [score(r) for r in records]
     records = [r for r in records if r.confidence_score >= threshold]
     final_count = len(records)
 
     # ── Writing phase ─────────────────────────────────────────────────────────
-    emit("writing", message="Saving files…")
+    _emit("writing", message="Saving files…")
     db = open_db(config)
     run_date = date.today()
     paths = write_output(records, config, run_date=run_date, db=db)
@@ -140,7 +147,7 @@ async def run_bridge(sources: list, threshold: float, formats: list):
         for r in records[:30]
     ]
 
-    emit(
+    _emit(
         "complete",
         rawCount=raw_count,
         dedupCount=dedup_count,

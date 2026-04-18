@@ -11,7 +11,6 @@ Updated: 2026-01-07 - Added interactive CLI for date filtering
 """
 
 import re
-import time
 import base64
 import os
 from io import BytesIO
@@ -19,7 +18,6 @@ from typing import List, Dict, Tuple, Optional
 from datetime import datetime
 import calendar
 
-from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 import pandas as pd
 from openpyxl import load_workbook
@@ -51,41 +49,19 @@ class LightcastChangelogScraper:
 
     def fetch_page(self) -> bool:
         """
-        Fetch the changelog page using Playwright (handles JavaScript rendering).
+        Fetch the changelog page using httpx (GitBook pages are server-side rendered).
 
         Returns:
             bool: True if successful, False otherwise
         """
         try:
-            print(f"🌐 Fetching changelog from: {self.url}")
-            print("🚀 Launching browser with Playwright...")
-
-            with sync_playwright() as p:
-                # Launch browser (headless mode)
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-
-                # Navigate to the page
-                print("📄 Loading page content...")
-                page.goto(self.url, wait_until="networkidle", timeout=60000)
-
-                # Wait for content to load (adjust selector as needed)
-                print("⏳ Waiting for content to render...")
-                time.sleep(5)  # Give extra time for dynamic content
-
-                # Get the rendered HTML
-                html_content = page.content()
-
-                # Close browser
-                browser.close()
-
-                # Parse with BeautifulSoup
-                self.soup = BeautifulSoup(html_content, 'html.parser')
-                print(f"✅ Page fetched successfully ({len(html_content)} bytes)")
-                return True
-
+            import httpx
+            resp = httpx.get(self.url, timeout=30, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            self.soup = BeautifulSoup(resp.text, "html.parser")
+            return True
         except Exception as e:
-            print(f"❌ Error fetching page: {e}")
+            print(f"Error fetching page: {e}")
             return False
 
     def parse_month_year(self, text: str) -> Tuple[Optional[str], Optional[str]]:

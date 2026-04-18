@@ -14,5 +14,10 @@
       "source": "/api/:path*",
       "destination": "/_/backend/api/:path*"
     }
-  ]
+  ],
+  "functions": {
+    "backend/server.py": {
+      "maxDuration": 300
+    }
+  }
 }
