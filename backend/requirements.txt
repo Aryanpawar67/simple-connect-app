@@ -21,3 +21,6 @@ psycopg2-binary==2.9.9
 
 # Environment
 python-dotenv>=1.0.0
+
+# Claude AI
+anthropic>=0.40.0
