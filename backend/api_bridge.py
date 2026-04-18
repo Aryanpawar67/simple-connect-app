@@ -71,8 +71,11 @@ async def run_bridge(sources: list, threshold: float, formats: list, event_queue
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
-    # Always resolve sheets dir relative to this file — makes the project portable
-    config["output"]["sheets_dir"] = str(_BACKEND_DIR / "sheets")
+    # On Vercel the function dir is read-only — write to /tmp instead
+    _on_vercel = os.environ.get("VERCEL") == "1"
+    _sheets_dir = Path("/tmp/taxotrack/sheets") if _on_vercel else _BACKEND_DIR / "sheets"
+    _sheets_dir.mkdir(parents=True, exist_ok=True)
+    config["output"]["sheets_dir"] = str(_sheets_dir)
     # Override output formats from caller
     config["output"]["formats"] = formats
     # Inject DATABASE_URL from env — overrides the (now empty) dsn in config.yaml
