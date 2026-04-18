@@ -31,7 +31,7 @@ __pycache__/
 # Backend — generated outputs & sensitive data
 backend/outputs/
 backend/sheets/
-backend/output/
+# backend/output/ is a Python module (writer.py) — NOT gitignored
 backend/taxonomy_state.json
 *.csv
 # Allow the master taxonomy xlsx to be committed
