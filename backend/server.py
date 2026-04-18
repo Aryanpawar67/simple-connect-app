@@ -431,6 +431,26 @@ def _run_skill_bridge(
                         "xlsx": msg.pop("xlsxPath", ""),
                     }
                     msg["jobId"] = job_id
+                    # Persist run metadata to Neon DB
+                    _db = _open_db(_DB_CONFIG)
+                    if _db:
+                        try:
+                            import datetime as _dt
+                            _db.save_run(
+                                job_id=job_id,
+                                run_date=_dt.date.today(),
+                                raw_count=msg.get("rawCount", 0),
+                                dedup_count=msg.get("dedupCount", 0),
+                                final_count=msg.get("finalCount", 0),
+                                new_count=msg.get("newCount", 0),
+                                returning_count=msg.get("returningCount", 0),
+                                sources_list=sources or [],
+                            )
+                        except Exception as _exc:
+                            import logging as _log
+                            _log.getLogger(__name__).warning("Failed to save run to DB: %s", _exc)
+                        finally:
+                            _db.close()
                     q.put(("complete", json.dumps(msg)))
                 elif event == "error":
                     q.put(("skill-error", json.dumps(msg)))
@@ -520,74 +540,76 @@ async def skills_download(job_id: str, format: str = Query("csv")):
 
 @app.get("/api/skills/history")
 async def skills_history():
-    """Return list of past scrape runs from the sheets directory."""
-    if not SKILL_SCRAPER_SHEETS.exists():
+    """Return list of past scrape runs from Neon DB."""
+    db = _open_db(_DB_CONFIG)
+    if db is None:
         return []
-
-    entries = []
-    seen_dates: set = set()
-
-    for csv_file in sorted(SKILL_SCRAPER_SHEETS.glob("*.csv"), reverse=True):
-        stem = csv_file.stem  # e.g. "2026-04-09"
-        if stem in seen_dates:
-            continue
-        seen_dates.add(stem)
-
-        # Count rows (subtract header)
-        try:
-            with open(csv_file, "r", encoding="utf-8") as f:
-                row_count = max(0, sum(1 for _ in f) - 1)
-        except Exception:
-            row_count = 0
-
-        # Count new skills
-        new_count = 0
-        try:
-            import csv as csv_mod
-            with open(csv_file, "r", encoding="utf-8") as f:
-                reader = csv_mod.DictReader(f)
-                for row in reader:
-                    if row.get("is_new", "").strip().lower() in ("true", "1", "yes"):
-                        new_count += 1
-        except Exception:
-            pass
-
-        file_size_kb = round(csv_file.stat().st_size / 1024, 1)
-        xlsx_file = SKILL_SCRAPER_SHEETS / f"{stem}.xlsx"
-
-        formats = ["CSV"]
-        if xlsx_file.exists():
-            formats.append("XLSX")
-
-        entries.append({
-            "date": stem,
-            "rows": row_count,
-            "newSkills": new_count,
-            "fileSize": f"{file_size_kb} KB",
-            "formats": formats,
-        })
-
-    return entries
+    try:
+        runs = db.list_runs(limit=50)
+    finally:
+        db.close()
+    return [
+        {
+            "job_id": r["job_id"],
+            "run_date": str(r["run_date"]),
+            "final_count": r["final_count"],
+            "new_count": r["new_count"],
+            "returning_count": r["returning_count"],
+            "raw_count": r["raw_count"],
+            "sources": r["sources"],
+            "completed_at": str(r["completed_at"]),
+        }
+        for r in runs
+    ]
 
 
 @app.get("/api/skills/history/{run_date}/download")
 async def skills_history_download(run_date: str, format: str = Query("csv")):
-    """Download a historical sheet by date (e.g. 2026-04-09)."""
+    """Download skills for a historical run date, generated on-demand from Neon DB."""
+    import io, csv as csv_mod
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", run_date):
         raise HTTPException(status_code=400, detail="run_date must be YYYY-MM-DD.")
+
+    db = _open_db(_DB_CONFIG)
+    if db is None:
+        raise HTTPException(status_code=503, detail="DB unavailable.")
+    try:
+        skills = db.skills_by_date(run_date)
+    finally:
+        db.close()
+
+    if not skills:
+        raise HTTPException(status_code=404, detail=f"No skills found for {run_date}.")
+
+    columns = ["skill_name", "category", "subcategory", "skill_type", "confidence_score", "source", "is_new"]
     fmt = format.lower()
-    ext = "xlsx" if fmt == "xlsx" else "csv"
-    file_path = (SKILL_SCRAPER_SHEETS / f"{run_date}.{ext}").resolve()
-    if file_path.parent != SKILL_SCRAPER_SHEETS.resolve():
-        raise HTTPException(status_code=400, detail="Invalid date.")
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"No {ext.upper()} sheet for {run_date}.")
-    media = (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        if fmt == "xlsx"
-        else "text/csv"
-    )
-    return FileResponse(path=str(file_path), filename=file_path.name, media_type=media)
+
+    if fmt == "xlsx":
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = f"Skills {run_date}"
+        ws.append(columns)
+        for s in skills:
+            ws.append([s.get(c, "") for c in columns])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="skills_{run_date}.xlsx"'},
+        )
+    else:
+        buf = io.StringIO()
+        writer = csv_mod.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(skills)
+        return StreamingResponse(
+            iter([buf.getvalue().encode()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="skills_{run_date}.csv"'},
+        )
 
 
 # ---------------------------------------------------------------------------

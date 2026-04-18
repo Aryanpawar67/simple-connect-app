@@ -49,6 +49,22 @@ ALTER TABLE skills ADD COLUMN IF NOT EXISTS taxonomy_domain    TEXT NOT NULL DEF
 ALTER TABLE skills ADD COLUMN IF NOT EXISTS taxonomy_subdomain TEXT NOT NULL DEFAULT '';
 """
 
+_SCRAPE_RUNS_DDL = """
+CREATE TABLE IF NOT EXISTS scrape_runs (
+    id              SERIAL PRIMARY KEY,
+    job_id          TEXT NOT NULL UNIQUE,
+    run_date        DATE NOT NULL,
+    raw_count       INT NOT NULL DEFAULT 0,
+    dedup_count     INT NOT NULL DEFAULT 0,
+    final_count     INT NOT NULL DEFAULT 0,
+    new_count       INT NOT NULL DEFAULT 0,
+    returning_count INT NOT NULL DEFAULT 0,
+    sources         TEXT NOT NULL DEFAULT '',
+    completed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_scrape_runs_date ON scrape_runs(run_date DESC);
+"""
+
 
 def _normalize(name: str) -> str:
     """
@@ -80,6 +96,7 @@ class SkillsDB:
         with self._conn.cursor() as cur:
             cur.execute(_DDL)
             cur.execute(_ALTER_DDL)
+            cur.execute(_SCRAPE_RUNS_DDL)
         self._conn.commit()
         log.debug("DB schema ready.")
 
@@ -254,6 +271,73 @@ class SkillsDB:
             updated = cur.rowcount
         self._conn.commit()
         return updated
+
+    def save_run(
+        self,
+        job_id: str,
+        run_date,
+        raw_count: int,
+        dedup_count: int,
+        final_count: int,
+        new_count: int,
+        returning_count: int,
+        sources_list: list,
+    ) -> None:
+        """Insert (or update on conflict) a scrape run record."""
+        sources_str = ", ".join(sources_list) if sources_list else ""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO scrape_runs
+                    (job_id, run_date, raw_count, dedup_count, final_count,
+                     new_count, returning_count, sources, completed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (job_id) DO UPDATE SET
+                    run_date        = EXCLUDED.run_date,
+                    raw_count       = EXCLUDED.raw_count,
+                    dedup_count     = EXCLUDED.dedup_count,
+                    final_count     = EXCLUDED.final_count,
+                    new_count       = EXCLUDED.new_count,
+                    returning_count = EXCLUDED.returning_count,
+                    sources         = EXCLUDED.sources,
+                    completed_at    = EXCLUDED.completed_at
+                """,
+                (job_id, run_date, raw_count, dedup_count, final_count,
+                 new_count, returning_count, sources_str),
+            )
+        self._conn.commit()
+        log.debug("Saved scrape run %s to DB.", job_id)
+
+    def list_runs(self, limit: int = 50) -> list:
+        """Return scrape runs ordered by completed_at DESC."""
+        with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT job_id, run_date, raw_count, dedup_count, final_count,
+                       new_count, returning_count, sources, completed_at
+                FROM scrape_runs
+                ORDER BY completed_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def skills_by_date(self, run_date: str) -> list:
+        """Return skills whose first_seen equals run_date (YYYY-MM-DD string)."""
+        with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT skill_name, category, subcategory, skill_type,
+                       confidence_score, source,
+                       (first_seen = last_seen) AS is_new
+                FROM skills
+                WHERE first_seen = %s::date
+                ORDER BY skill_name
+                """,
+                (run_date,),
+            )
+            return [dict(r) for r in cur.fetchall()]
 
     def merged_skills_summary(self) -> dict:
         """Return count of merged vs unmerged skills and per-date breakdown."""
