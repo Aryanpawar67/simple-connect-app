@@ -9,7 +9,7 @@ const Index = () => {
 
   return (
     <AppLayout activeTool={activeTool} onToolChange={setActiveTool}>
-      {activeTool === "scraper" && <SkillScraperPage />}
+      {activeTool === "scraper" && <SkillScraperPage onGoToTaxonomy={() => setActiveTool("taxonomy")} />}
       {activeTool === "changelog" && <ChangelogScraperPage />}
       {activeTool === "taxonomy" && <TaxonomyManagerPage />}
     </AppLayout>

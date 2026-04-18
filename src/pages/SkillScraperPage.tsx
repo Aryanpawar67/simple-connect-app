@@ -16,6 +16,7 @@ import {
   CalendarDays,
   AlertCircle,
   Info,
+  ArrowRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -143,7 +144,11 @@ const SOURCE_DESCRIPTIONS: Record<string, { what: string; why: string }> = {
   },
 };
 
-const SkillScraperPage = () => {
+interface SkillScraperPageProps {
+  onGoToTaxonomy?: () => void;
+}
+
+const SkillScraperPage = ({ onGoToTaxonomy }: SkillScraperPageProps) => {
   const [activeTab, setActiveTab] = useState<ActiveTab>("run");
   const [mode, setMode] = useState<ScrapeMode>("quick");
   const [selectedSources, setSelectedSources] = useState<string[]>(QUICK_SOURCES);
@@ -578,6 +583,31 @@ const SkillScraperPage = () => {
         </Card>
       )}
 
+      {/* What's Next banner — shown after a successful scrape with new skills */}
+      {runState === "success" && summary && summary.newCount > 0 && onGoToTaxonomy && (
+        <Card className="p-5 border-primary/20 bg-primary/5 animate-slide-up">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
+                <ArrowRight className="w-4 h-4 text-primary" />
+              </div>
+              <div>
+                <p className="font-semibold text-sm">
+                  {summary.newCount} new {summary.newCount === 1 ? "skill" : "skills"} ready to review
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Head to <strong>Taxonomy Manager → Compare &amp; Merge</strong> to review classifications and add them to your master taxonomy.
+                </p>
+              </div>
+            </div>
+            <Button size="sm" onClick={onGoToTaxonomy} className="shrink-0">
+              Go to Taxonomy Manager
+              <ArrowRight className="w-3.5 h-3.5 ml-1.5" />
+            </Button>
+          </div>
+        </Card>
+      )}
+
       {/* Results Table */}
       {results.length > 0 && (
         <Card className="animate-slide-up overflow-hidden">
@@ -675,7 +705,7 @@ const SkillScraperPage = () => {
                       <TableCell className="text-right text-sm text-muted-foreground">{run.fileSize}</TableCell>
                       <TableCell>
                         <div className="flex gap-1">
-                          {run.formats.map((f) => (
+                          {(run.formats ?? []).map((f) => (
                             <button
                               key={f}
                               onClick={() => downloadHistory(run.date, f)}

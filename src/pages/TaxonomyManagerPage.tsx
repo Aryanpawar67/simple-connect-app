@@ -73,6 +73,7 @@ interface CompareResult {
 
 interface EditedSkill extends NewSkill {
   selected: boolean;
+  isUnmappable: boolean;
 }
 
 interface MergeHistoryEntry {
@@ -102,6 +103,12 @@ const ALL_CLASSIFICATIONS = [
   "Analytical","Functional","Power","AI","Strategic","Leadership","Cognitive","Green",
 ];
 
+const getConfidenceBadgeClass = (score: number): string => {
+  if (score >= 0.8) return "bg-green-100 text-green-700 border-green-200";
+  if (score >= 0.6) return "bg-amber-100 text-amber-700 border-amber-200";
+  return "bg-red-100 text-red-700 border-red-200";
+};
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -126,7 +133,7 @@ const TaxonomyManagerPage = () => {
   const [editedSkills, setEditedSkills] = useState<EditedSkill[]>([]);
   const [domainsIndex, setDomainsIndex] = useState<Record<string, string[]>>({});
   const [page, setPage] = useState(0);
-  const [showUnmappable, setShowUnmappable] = useState(false);
+  const [skillFilter, setSkillFilter] = useState<"all" | "mapped" | "unmappable">("all");
 
   // Merge
   const [merging, setMerging] = useState(false);
@@ -228,9 +235,10 @@ const TaxonomyManagerPage = () => {
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data: CompareResult = await res.json();
       setCompareResult(data);
-      setEditedSkills(
-        [...data.new_skills, ...data.unmappable].map((s) => ({ ...s, selected: true }))
-      );
+      setEditedSkills([
+        ...data.new_skills.map((s) => ({ ...s, selected: true, isUnmappable: false })),
+        ...data.unmappable.map((s) => ({ ...s, selected: true, isUnmappable: true })),
+      ]);
     } catch (e: any) {
       setCompareError(e.message || "Comparison failed");
     } finally {
@@ -304,15 +312,6 @@ const TaxonomyManagerPage = () => {
   const downloadHistoryFile = (filename: string) => {
     window.open(`/api/taxonomy/history/${filename}/download`, "_blank");
   };
-
-  // ---------------------------------------------------------------------------
-  // Pagination
-  // ---------------------------------------------------------------------------
-
-  const totalPages = Math.ceil(editedSkills.length / PAGE_SIZE);
-  const pagedSkills = editedSkills.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-  const pagedOffset = page * PAGE_SIZE;
-  const selectedCount = editedSkills.filter((s) => s.selected).length;
 
   // ---------------------------------------------------------------------------
   // Stats tab
@@ -425,252 +424,317 @@ const TaxonomyManagerPage = () => {
   // Compare & Merge tab
   // ---------------------------------------------------------------------------
 
-  const renderMerge = () => (
-    <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Button onClick={runCompare} disabled={compareLoading || merging}>
-          {compareLoading
-            ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Comparing…</>
-            : <><RefreshCw className="w-4 h-4 mr-2" />Run Comparison</>}
-        </Button>
-        <p className="text-sm text-muted-foreground">
-          Compares scraped skills against the <strong>current living master</strong> — only truly new skills appear.
-        </p>
-      </div>
+  const renderMerge = () => {
+    // Build filtered list with original indices so toggleSelect/updateField stay correct
+    const filteredWithIdx = editedSkills
+      .map((s, idx) => ({ ...s, _idx: idx }))
+      .filter((s) => {
+        if (skillFilter === "mapped") return !s.isUnmappable;
+        if (skillFilter === "unmappable") return s.isUnmappable;
+        return true;
+      });
 
-      {compareResult && (
-        <div className="text-xs text-muted-foreground bg-muted/40 rounded px-3 py-2">
-          Compared against: <code>{compareResult.master_filename}</code>
+    const totalFilteredPages = Math.ceil(filteredWithIdx.length / PAGE_SIZE);
+    const pagedFilteredSkills = filteredWithIdx.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+    const selectedCount = editedSkills.filter((s) => s.selected).length;
+    const mappedCount = editedSkills.filter((s) => !s.isUnmappable).length;
+    const unmappableCount = editedSkills.filter((s) => s.isUnmappable).length;
+
+    const step1Done = !!compareResult;
+    const step2Done = !!mergeResult;
+
+    return (
+      <div className="space-y-6">
+        {/* Step progress indicator */}
+        <div className="flex items-center">
+          {([
+            { n: 1, label: "Compare", done: step1Done, active: !step2Done },
+            { n: 2, label: "Review Skills", done: step2Done, active: step1Done && !step2Done },
+            { n: 3, label: "Merge Complete", done: step2Done, active: step2Done },
+          ] as { n: number; label: string; done: boolean; active: boolean }[]).map((step, i) => (
+            <div key={step.n} className="flex items-center">
+              <div className={`flex items-center gap-2 text-sm font-medium
+                ${step.done ? "text-green-700" : step.active ? "text-primary" : "text-muted-foreground"}`}>
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0
+                  ${step.done ? "bg-green-500 text-white" : step.active ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
+                  {step.done && i < 2 ? "✓" : step.n}
+                </div>
+                <span className="hidden sm:inline">{step.label}</span>
+              </div>
+              {i < 2 && (
+                <div className={`w-10 h-px mx-2 ${i === 0 && step1Done ? "bg-green-300" : "bg-border"}`} />
+              )}
+            </div>
+          ))}
         </div>
-      )}
 
-      {compareError && (
-        <div className="rounded-lg bg-destructive/10 text-destructive px-4 py-3 text-sm">{compareError}</div>
-      )}
-
-      {compareResult && (
-        <>
-          {/* Summary cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {[
-              { label: "DB Skills", value: compareResult.total_db_skills, color: "" },
-              { label: "Already in Master", value: compareResult.matched, color: "text-green-600" },
-              { label: "New This Week", value: compareResult.new_skills.length, color: "text-amber-600" },
-              { label: "Needs Review", value: compareResult.unmappable.length, color: compareResult.unmappable.length > 0 ? "text-red-600" : "text-muted-foreground" },
-            ].map(({ label, value, color }) => (
-              <Card key={label}>
-                <CardContent className="pt-5 pb-4">
-                  <div className="text-xs text-muted-foreground mb-1">{label}</div>
-                  <div className={`text-2xl font-bold ${color}`}>{value.toLocaleString()}</div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-
-          {/* Bulk controls */}
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-sm text-muted-foreground">
-              {selectedCount.toLocaleString()} of {editedSkills.length.toLocaleString()} selected
-            </span>
-            <Button variant="outline" size="sm" onClick={selectAll}>Select All</Button>
-            <Button variant="outline" size="sm" onClick={deselectAll}>Deselect All</Button>
-            <div className="ml-auto">
-              <Button onClick={doMerge} disabled={merging || selectedCount === 0}>
-                {merging
-                  ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Merging…</>
-                  : <><GitMerge className="w-4 h-4 mr-2" />Merge {selectedCount > 0 ? selectedCount.toLocaleString() : ""} Selected</>}
+        {/* ── POST-MERGE SUCCESS VIEW ── */}
+        {mergeResult && (
+          <div className="rounded-xl border-2 border-green-200 bg-green-50 p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center shrink-0">
+                <FileCheck className="w-6 h-6 text-green-600" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-green-900 text-lg">Merge Complete</h3>
+                <p className="text-sm text-green-700 mt-0.5">
+                  {mergeResult.added_count.toLocaleString()} skills successfully added to master taxonomy
+                </p>
+              </div>
+            </div>
+            <div className="bg-white/70 rounded-lg p-3 text-xs space-y-1.5 border border-green-100">
+              <div className="flex items-center gap-2">
+                <span className="text-green-700 font-medium">New master file:</span>
+                <code className="bg-green-100/60 px-1.5 py-0.5 rounded">{mergeResult.new_master}</code>
+              </div>
+              <p className="text-green-600">
+                Future comparisons will automatically exclude skills already in this file.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={downloadMerged}>
+                <Download className="w-4 h-4 mr-2" />Download New Master
+              </Button>
+              <Button variant="outline" size="sm" onClick={runCompare}>
+                <RefreshCw className="w-4 h-4 mr-2" />Run New Comparison
               </Button>
             </div>
           </div>
+        )}
 
-          {mergeError && (
-            <div className="rounded-lg bg-destructive/10 text-destructive px-4 py-3 text-sm">{mergeError}</div>
-          )}
-
-          {mergeResult && (
-            <div className="rounded-lg bg-green-50 border border-green-200 px-4 py-4 space-y-1">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-medium text-green-800">
-                    {mergeResult.added_count.toLocaleString()} skills added — master taxonomy updated
-                  </p>
-                  <p className="text-xs text-green-600 mt-0.5">
-                    New master: <code>{mergeResult.new_master}</code>
-                  </p>
-                  <p className="text-xs text-green-600">
-                    Next comparison will only show skills not in this updated file.
-                  </p>
-                </div>
-                <Button variant="outline" size="sm" onClick={downloadMerged}>
-                  <Download className="w-4 h-4 mr-2" />Download
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* Skills table */}
-          {editedSkills.length > 0 && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium">
-                  New Skills to Add ({compareResult.new_skills.length.toLocaleString()})
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-10"></TableHead>
-                        <TableHead>Skill Name</TableHead>
-                        <TableHead>Domain</TableHead>
-                        <TableHead>Subdomain</TableHead>
-                        <TableHead>Classification</TableHead>
-                        <TableHead>Confidence</TableHead>
-                        <TableHead>Source</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {pagedSkills.map((skill, i) => {
-                        const absIdx = pagedOffset + i;
-                        const subdomains = domainsIndex[skill.proposed_domain] || [];
-                        return (
-                          <TableRow key={skill.db_id} className={skill.selected ? "" : "opacity-40"}>
-                            <TableCell>
-                              <Checkbox checked={skill.selected} onCheckedChange={() => toggleSelect(absIdx)} />
-                            </TableCell>
-                            <TableCell className="font-medium whitespace-nowrap">{skill.skill_name}</TableCell>
-                            <TableCell>
-                              <Select value={skill.proposed_domain} onValueChange={(v) => updateField(absIdx, "proposed_domain", v)}>
-                                <SelectTrigger className="h-7 text-xs w-44"><SelectValue /></SelectTrigger>
-                                <SelectContent>
-                                  {Object.keys(domainsIndex).map((d) => (
-                                    <SelectItem key={d} value={d} className="text-xs">{d}</SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </TableCell>
-                            <TableCell>
-                              <Select value={skill.proposed_subdomain} onValueChange={(v) => updateField(absIdx, "proposed_subdomain", v)}>
-                                <SelectTrigger className="h-7 text-xs w-44"><SelectValue /></SelectTrigger>
-                                <SelectContent>
-                                  {subdomains.map((s) => (
-                                    <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </TableCell>
-                            <TableCell>
-                              <Select value={skill.proposed_classification} onValueChange={(v) => updateField(absIdx, "proposed_classification", v)}>
-                                <SelectTrigger className="h-7 text-xs w-36"><SelectValue /></SelectTrigger>
-                                <SelectContent>
-                                  {ALL_CLASSIFICATIONS.map((c) => (
-                                    <SelectItem key={c} value={c} className="text-xs">{c}</SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant="outline" className="text-xs">
-                                {(skill.confidence_score * 100).toFixed(0)}%
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="text-xs text-muted-foreground max-w-[160px] truncate">
-                              {skill.source}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
-
-                {totalPages > 1 && (
-                  <div className="flex items-center justify-between px-4 py-3 border-t text-sm text-muted-foreground">
-                    <span>Showing {pagedOffset + 1}–{Math.min(pagedOffset + PAGE_SIZE, editedSkills.length)} of {editedSkills.length.toLocaleString()}</span>
-                    <div className="flex gap-2">
-                      <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}>Previous</Button>
-                      <Button variant="outline" size="sm" disabled={page >= totalPages - 1} onClick={() => setPage(p => p + 1)}>Next</Button>
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Unmappable (collapsible) */}
-          {compareResult.unmappable.length > 0 && (
-            <Card>
-              <CardHeader className="pb-2 cursor-pointer select-none" onClick={() => setShowUnmappable(v => !v)}>
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-sm font-medium text-amber-700">
-                    Needs Review — No Category ({compareResult.unmappable.length})
-                  </CardTitle>
-                  {showUnmappable ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                </div>
-              </CardHeader>
-              {showUnmappable && (
-                <CardContent className="p-0">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="w-10"></TableHead>
-                        <TableHead>Skill Name</TableHead>
-                        <TableHead>Domain</TableHead>
-                        <TableHead>Subdomain</TableHead>
-                        <TableHead>Classification</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {compareResult.unmappable.map((skill) => {
-                        const absIdx = editedSkills.findIndex(s => s.db_id === skill.db_id);
-                        const edited = absIdx >= 0 ? editedSkills[absIdx] : skill as EditedSkill;
-                        const subdomains = domainsIndex[edited.proposed_domain] || [];
-                        return (
-                          <TableRow key={skill.db_id} className={edited.selected ? "" : "opacity-40"}>
-                            <TableCell>
-                              <Checkbox checked={edited.selected} onCheckedChange={() => absIdx >= 0 && toggleSelect(absIdx)} />
-                            </TableCell>
-                            <TableCell className="font-medium">{skill.skill_name}</TableCell>
-                            <TableCell>
-                              <Select value={edited.proposed_domain} onValueChange={(v) => absIdx >= 0 && updateField(absIdx, "proposed_domain", v)}>
-                                <SelectTrigger className="h-7 text-xs w-44"><SelectValue /></SelectTrigger>
-                                <SelectContent>
-                                  {Object.keys(domainsIndex).map((d) => (
-                                    <SelectItem key={d} value={d} className="text-xs">{d}</SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </TableCell>
-                            <TableCell>
-                              <Select value={edited.proposed_subdomain} onValueChange={(v) => absIdx >= 0 && updateField(absIdx, "proposed_subdomain", v)}>
-                                <SelectTrigger className="h-7 text-xs w-44"><SelectValue /></SelectTrigger>
-                                <SelectContent>
-                                  {subdomains.map((s) => <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>)}
-                                </SelectContent>
-                              </Select>
-                            </TableCell>
-                            <TableCell>
-                              <Select value={edited.proposed_classification} onValueChange={(v) => absIdx >= 0 && updateField(absIdx, "proposed_classification", v)}>
-                                <SelectTrigger className="h-7 text-xs w-36"><SelectValue /></SelectTrigger>
-                                <SelectContent>
-                                  {ALL_CLASSIFICATIONS.slice(0, 5).map((c) => <SelectItem key={c} value={c} className="text-xs">{c}</SelectItem>)}
-                                </SelectContent>
-                              </Select>
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </CardContent>
+        {/* ── COMPARE + REVIEW FLOW ── */}
+        {!mergeResult && (
+          <>
+            {/* Action row */}
+            <div className="flex items-center gap-3 flex-wrap">
+              <Button
+                onClick={runCompare}
+                disabled={compareLoading || merging}
+                variant={compareResult ? "outline" : "default"}
+              >
+                {compareLoading
+                  ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Comparing…</>
+                  : compareResult
+                    ? <><RefreshCw className="w-4 h-4 mr-2" />Re-compare</>
+                    : <><RefreshCw className="w-4 h-4 mr-2" />Run Comparison</>}
+              </Button>
+              {!compareResult && !compareLoading && (
+                <p className="text-sm text-muted-foreground">
+                  Compares scraped skills against the <strong>current living master</strong> — only truly new skills appear.
+                </p>
               )}
-            </Card>
-          )}
-        </>
-      )}
-    </div>
-  );
+              {compareResult && (
+                <div className="text-xs text-muted-foreground bg-muted/40 rounded px-3 py-1.5 flex items-center gap-1.5">
+                  <FileCheck className="w-3.5 h-3.5 shrink-0" />
+                  Compared against: <code>{compareResult.master_filename}</code>
+                </div>
+              )}
+            </div>
+
+            {compareError && (
+              <div className="rounded-lg bg-destructive/10 text-destructive px-4 py-3 text-sm">{compareError}</div>
+            )}
+
+            {/* Empty state */}
+            {!compareResult && !compareLoading && !compareError && (
+              <div className="flex flex-col items-center justify-center py-16 gap-4 border-2 border-dashed border-border rounded-xl text-center">
+                <div className="w-14 h-14 rounded-2xl bg-muted flex items-center justify-center">
+                  <GitMerge className="w-7 h-7 text-muted-foreground" />
+                </div>
+                <div>
+                  <h3 className="font-semibold mb-1">No comparison run yet</h3>
+                  <p className="text-sm text-muted-foreground max-w-xs">
+                    Run a comparison to find new skills scraped since the last master update.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {compareResult && (
+              <>
+                {/* Summary cards */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  {[
+                    { label: "DB Skills", value: compareResult.total_db_skills, color: "" },
+                    { label: "Already in Master", value: compareResult.matched, color: "text-green-600" },
+                    { label: "Auto-classified", value: compareResult.new_skills.length, color: "text-blue-600" },
+                    {
+                      label: "Needs Review",
+                      value: compareResult.unmappable.length,
+                      color: compareResult.unmappable.length > 0 ? "text-amber-600" : "text-muted-foreground",
+                    },
+                  ].map(({ label, value, color }) => (
+                    <Card key={label}>
+                      <CardContent className="pt-5 pb-4">
+                        <div className="text-xs text-muted-foreground mb-1">{label}</div>
+                        <div className={`text-2xl font-bold ${color}`}>{value.toLocaleString()}</div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+
+                {mergeError && (
+                  <div className="rounded-lg bg-destructive/10 text-destructive px-4 py-3 text-sm">{mergeError}</div>
+                )}
+
+                {/* Unified skills table with filter tabs */}
+                {editedSkills.length > 0 && (
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <div className="flex items-center justify-between gap-4 flex-wrap">
+                        <CardTitle className="text-sm font-medium">Review Skills to Add</CardTitle>
+                        {/* Filter tabs */}
+                        <div className="flex items-center gap-1 border rounded-lg p-1 bg-muted/30">
+                          {([
+                            { id: "all" as const, label: "All", count: editedSkills.length },
+                            { id: "mapped" as const, label: "Auto-classified", count: mappedCount },
+                            { id: "unmappable" as const, label: "Needs Review", count: unmappableCount },
+                          ]).map((tab) => (
+                            <button
+                              key={tab.id}
+                              onClick={() => { setSkillFilter(tab.id); setPage(0); }}
+                              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5
+                                ${skillFilter === tab.id
+                                  ? "bg-background shadow-sm text-foreground"
+                                  : "text-muted-foreground hover:text-foreground"}`}
+                            >
+                              {tab.label}
+                              {tab.count > 0 && (
+                                <span className={`px-1.5 py-0.5 rounded-full text-xs
+                                  ${tab.id === "unmappable"
+                                    ? "bg-amber-100 text-amber-700"
+                                    : skillFilter === tab.id
+                                      ? "bg-primary/10 text-primary"
+                                      : "bg-muted text-muted-foreground"}`}>
+                                  {tab.count}
+                                </span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="p-0">
+                      <div className="overflow-x-auto">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="w-10"></TableHead>
+                              <TableHead>Skill Name</TableHead>
+                              <TableHead>Domain</TableHead>
+                              <TableHead>Subdomain</TableHead>
+                              <TableHead>Classification</TableHead>
+                              <TableHead>Confidence</TableHead>
+                              <TableHead>Source</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {pagedFilteredSkills.map((skill) => {
+                              const absIdx = skill._idx;
+                              const subdomains = domainsIndex[skill.proposed_domain] || [];
+                              return (
+                                <TableRow
+                                  key={skill.db_id}
+                                  className={`${skill.selected ? "" : "opacity-40"} ${skill.isUnmappable ? "bg-amber-50/50" : ""}`}
+                                >
+                                  <TableCell>
+                                    <Checkbox checked={skill.selected} onCheckedChange={() => toggleSelect(absIdx)} />
+                                  </TableCell>
+                                  <TableCell>
+                                    <div className="flex flex-col gap-1 min-w-[160px]">
+                                      <span className="font-medium text-sm">{skill.skill_name}</span>
+                                      {skill.isUnmappable && (
+                                        <span className="inline-flex items-center text-[10px] font-medium text-amber-700 bg-amber-100 border border-amber-200 rounded px-1.5 py-0.5 w-fit">
+                                          Needs Review
+                                        </span>
+                                      )}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Select value={skill.proposed_domain} onValueChange={(v) => updateField(absIdx, "proposed_domain", v)}>
+                                      <SelectTrigger className="h-7 text-xs w-44"><SelectValue /></SelectTrigger>
+                                      <SelectContent>
+                                        {Object.keys(domainsIndex).map((d) => (
+                                          <SelectItem key={d} value={d} className="text-xs">{d}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Select value={skill.proposed_subdomain} onValueChange={(v) => updateField(absIdx, "proposed_subdomain", v)}>
+                                      <SelectTrigger className="h-7 text-xs w-44"><SelectValue /></SelectTrigger>
+                                      <SelectContent>
+                                        {subdomains.map((s) => (
+                                          <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Select value={skill.proposed_classification} onValueChange={(v) => updateField(absIdx, "proposed_classification", v)}>
+                                      <SelectTrigger className="h-7 text-xs w-36"><SelectValue /></SelectTrigger>
+                                      <SelectContent>
+                                        {ALL_CLASSIFICATIONS.map((c) => (
+                                          <SelectItem key={c} value={c} className="text-xs">{c}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Badge
+                                      variant="outline"
+                                      className={`text-xs ${getConfidenceBadgeClass(skill.confidence_score)}`}
+                                    >
+                                      {(skill.confidence_score * 100).toFixed(0)}%
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="text-xs text-muted-foreground max-w-[160px] truncate">
+                                    {skill.source}
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </div>
+
+                      {totalFilteredPages > 1 && (
+                        <div className="flex items-center justify-between px-4 py-3 border-t text-sm text-muted-foreground">
+                          <span>
+                            Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, filteredWithIdx.length)} of {filteredWithIdx.length.toLocaleString()}
+                          </span>
+                          <div className="flex gap-2">
+                            <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}>Previous</Button>
+                            <Button variant="outline" size="sm" disabled={page >= totalFilteredPages - 1} onClick={() => setPage(p => p + 1)}>Next</Button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Action bar — always visible at the bottom of the table */}
+                      <div className="flex items-center gap-3 flex-wrap border-t bg-muted/20 px-4 py-3">
+                        <span className="text-sm text-muted-foreground">
+                          <span className="font-medium text-foreground">{selectedCount.toLocaleString()}</span> of {editedSkills.length.toLocaleString()} selected
+                        </span>
+                        <Button variant="outline" size="sm" onClick={selectAll}>Select All</Button>
+                        <Button variant="outline" size="sm" onClick={deselectAll}>Deselect All</Button>
+                        <div className="ml-auto">
+                          <Button onClick={doMerge} disabled={merging || selectedCount === 0}>
+                            {merging
+                              ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Merging…</>
+                              : <><GitMerge className="w-4 h-4 mr-2" />Merge {selectedCount > 0 ? `${selectedCount.toLocaleString()} Skills` : ""}</>}
+                          </Button>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </div>
+    );
+  };
 
   // ---------------------------------------------------------------------------
   // History tab
