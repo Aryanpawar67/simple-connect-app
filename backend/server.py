@@ -563,6 +563,46 @@ async def skills_history():
     ]
 
 
+@app.get("/api/skills/trends")
+async def skills_trends(runs: int = Query(5, ge=1, le=20)):
+    """
+    AI trend analysis across the last N scrape runs.
+    Requires ANTHROPIC_API_KEY; returns ai_available=false otherwise.
+    """
+    from ai.trends import ai_analyze_trends
+    db = _open_db(_DB_CONFIG)
+    if db is None:
+        raise HTTPException(status_code=503, detail="DB unavailable.")
+    try:
+        run_history = db.list_runs(limit=runs)
+        if not run_history:
+            return {"ai_available": False, "headline": "No scrape runs found.", "run_count": 0}
+        # Get skills from most recent run
+        most_recent_date = str(run_history[0]["run_date"])
+        recent_skills = db.skills_by_date(most_recent_date)
+    finally:
+        db.close()
+    return ai_analyze_trends(run_history, recent_skills)
+
+
+class ExplainRequest(BaseModel):
+    skills: list[dict]
+
+
+@app.post("/api/skills/explain")
+async def skills_explain(body: ExplainRequest):
+    """
+    Generate AI explanations for confidence scores.
+    Pass a list of skill dicts (must have skill_name, confidence_score, source).
+    Returns same list with 'explanation' field added.
+    Falls back to a rule-based explanation if ANTHROPIC_API_KEY is not set.
+    """
+    if not body.skills:
+        raise HTTPException(status_code=400, detail="No skills provided.")
+    from ai.explainer import ai_explain_skills
+    return {"skills": ai_explain_skills(body.skills)}
+
+
 @app.get("/api/skills/history/{run_date}/download")
 async def skills_history_download(run_date: str, format: str = Query("csv")):
     """Download skills for a historical run date, generated on-demand from Neon DB."""
@@ -733,6 +773,20 @@ async def taxonomy_compare():
     result = _tax_compare(_require_db(), db_skills)
     result["master_filename"] = "Neon DB"
     return result
+
+
+@app.post("/api/taxonomy/review")
+async def taxonomy_review(body: MergeRequest):
+    """
+    AI review of proposed skills before merge.
+    Returns approved / flagged / rejected buckets.
+    Falls back to all-approved if ANTHROPIC_API_KEY is not set.
+    """
+    if not body.approved_skills:
+        raise HTTPException(status_code=400, detail="No skills provided.")
+    from ai.reviewer import ai_review_merge
+    proposed = [s.model_dump() for s in body.approved_skills]
+    return ai_review_merge(proposed)
 
 
 @app.post("/api/taxonomy/merge")
