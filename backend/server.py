@@ -472,7 +472,7 @@ def _run_skill_bridge(
 @app.get("/api/skills/stream")
 async def skills_stream(
     sources: Optional[str] = Query(None, description="Comma-separated display names"),
-    threshold: float = Query(0.25),
+    threshold: float = Query(0.5),
     formats: str = Query("csv,xlsx", description="Comma-separated: csv and/or xlsx"),
 ):
     """

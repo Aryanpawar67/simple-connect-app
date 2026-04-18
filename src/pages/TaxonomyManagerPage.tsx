@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Slider } from "@/components/ui/slider";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 
 // ---------------------------------------------------------------------------
@@ -134,6 +135,7 @@ const TaxonomyManagerPage = () => {
   const [domainsIndex, setDomainsIndex] = useState<Record<string, string[]>>({});
   const [page, setPage] = useState(0);
   const [skillFilter, setSkillFilter] = useState<"all" | "mapped" | "unmappable">("all");
+  const [mergeConfidenceThreshold, setMergeConfidenceThreshold] = useState(0.6);
 
   // Merge
   const [merging, setMerging] = useState(false);
@@ -711,18 +713,63 @@ const TaxonomyManagerPage = () => {
                       )}
 
                       {/* Action bar — always visible at the bottom of the table */}
-                      <div className="flex items-center gap-3 flex-wrap border-t bg-muted/20 px-4 py-3">
-                        <span className="text-sm text-muted-foreground">
-                          <span className="font-medium text-foreground">{selectedCount.toLocaleString()}</span> of {editedSkills.length.toLocaleString()} selected
-                        </span>
-                        <Button variant="outline" size="sm" onClick={selectAll}>Select All</Button>
-                        <Button variant="outline" size="sm" onClick={deselectAll}>Deselect All</Button>
-                        <div className="ml-auto">
-                          <Button onClick={doMerge} disabled={merging || selectedCount === 0}>
-                            {merging
-                              ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Merging…</>
-                              : <><GitMerge className="w-4 h-4 mr-2" />Merge {selectedCount > 0 ? `${selectedCount.toLocaleString()} Skills` : ""}</>}
-                          </Button>
+                      <div className="border-t bg-muted/20 px-4 py-3 space-y-3">
+                        {/* Confidence threshold row */}
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs text-muted-foreground whitespace-nowrap">
+                            Min confidence:
+                            <span className="font-semibold text-foreground ml-1">
+                              {(mergeConfidenceThreshold * 100).toFixed(0)}%
+                            </span>
+                          </span>
+                          <div className="w-36">
+                            <Slider
+                              value={[mergeConfidenceThreshold]}
+                              onValueChange={([v]) => {
+                                setMergeConfidenceThreshold(v);
+                                setEditedSkills(prev =>
+                                  prev.map(s => ({ ...s, selected: s.confidence_score >= v }))
+                                );
+                              }}
+                              min={0}
+                              max={1}
+                              step={0.05}
+                            />
+                          </div>
+                          <div className="flex gap-1 text-xs text-muted-foreground">
+                            {[0.4, 0.6, 0.8].map(preset => (
+                              <button
+                                key={preset}
+                                onClick={() => {
+                                  setMergeConfidenceThreshold(preset);
+                                  setEditedSkills(prev =>
+                                    prev.map(s => ({ ...s, selected: s.confidence_score >= preset }))
+                                  );
+                                }}
+                                className={`px-2 py-0.5 rounded border text-xs transition-colors
+                                  ${mergeConfidenceThreshold === preset
+                                    ? "bg-primary text-primary-foreground border-primary"
+                                    : "border-border hover:border-muted-foreground"}`}
+                              >
+                                {(preset * 100).toFixed(0)}%
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        {/* Select controls + merge button row */}
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <span className="text-sm text-muted-foreground">
+                            <span className="font-medium text-foreground">{selectedCount.toLocaleString()}</span> of {editedSkills.length.toLocaleString()} selected
+                          </span>
+                          <Button variant="outline" size="sm" onClick={selectAll}>Select All</Button>
+                          <Button variant="outline" size="sm" onClick={deselectAll}>Deselect All</Button>
+                          <div className="ml-auto">
+                            <Button onClick={doMerge} disabled={merging || selectedCount === 0}>
+                              {merging
+                                ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Merging…</>
+                                : <><GitMerge className="w-4 h-4 mr-2" />Merge {selectedCount > 0 ? `${selectedCount.toLocaleString()} Skills` : ""}</>}
+                            </Button>
+                          </div>
                         </div>
                       </div>
                     </CardContent>

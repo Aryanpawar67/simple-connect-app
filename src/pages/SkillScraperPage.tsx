@@ -152,7 +152,7 @@ const SkillScraperPage = ({ onGoToTaxonomy }: SkillScraperPageProps) => {
   const [activeTab, setActiveTab] = useState<ActiveTab>("run");
   const [mode, setMode] = useState<ScrapeMode>("quick");
   const [selectedSources, setSelectedSources] = useState<string[]>(QUICK_SOURCES);
-  const [threshold, setThreshold] = useState(0.25);
+  const [threshold, setThreshold] = useState(0.5);
   const [outputFormats, setOutputFormats] = useState({ csv: true, excel: true });
   const [showSources, setShowSources] = useState(false);
   const [runState, setRunState] = useState<RunState>("idle");

@@ -197,7 +197,7 @@ if __name__ == "__main__":
         "--sources", default="",
         help="Comma-separated SOURCE_IDs to run. Empty = all enabled in config.",
     )
-    parser.add_argument("--threshold", type=float, default=0.25)
+    parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--formats", default="csv,xlsx")
     args = parser.parse_args()
 
