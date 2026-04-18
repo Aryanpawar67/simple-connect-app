@@ -71,10 +71,14 @@ async def run_bridge(sources: list, threshold: float, formats: list, event_queue
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
-    # On Vercel the function dir is read-only — write to /tmp instead
-    _on_vercel = os.environ.get("VERCEL") == "1"
-    _sheets_dir = Path("/tmp/taxotrack/sheets") if _on_vercel else _BACKEND_DIR / "sheets"
-    _sheets_dir.mkdir(parents=True, exist_ok=True)
+    # Resolve sheets dir — try backend/sheets first, fall back to /tmp (Vercel, read-only fs)
+    _preferred = _BACKEND_DIR / "sheets"
+    try:
+        _preferred.mkdir(parents=True, exist_ok=True)
+        _sheets_dir = _preferred
+    except OSError:
+        _sheets_dir = Path("/tmp/taxotrack/sheets")
+        _sheets_dir.mkdir(parents=True, exist_ok=True)
     config["output"]["sheets_dir"] = str(_sheets_dir)
     # Override output formats from caller
     config["output"]["formats"] = formats
@@ -112,6 +116,22 @@ async def run_bridge(sources: list, threshold: float, formats: list, event_queue
             _emit("source-error", source=scraper.SOURCE_ID, error=str(exc))
 
     raw_count = len(all_records)
+
+    # ── Pre-filter: skip skills already in DB ─────────────────────────────────
+    # Load all normalized names already stored so we only process genuine new candidates.
+    # Falls back gracefully if DB is unavailable.
+    try:
+        from db.client import open_db
+        from processor.deduplicator import normalize_name
+        _pre_db = open_db(config)
+        if _pre_db:
+            known_norms: set = {normalize_name(s["skill_name"]) for s in _pre_db.all_skills()}
+            _pre_db.close()
+            before = len(all_records)
+            all_records = [r for r in all_records if normalize_name(r.skill_name) not in known_norms]
+            _emit("processing", message=f"Pre-filter: {before - len(all_records)} already known, {len(all_records)} new candidates to process.")
+    except Exception:
+        pass  # If pre-filter fails, process everything as before
 
     # ── Processing phase ──────────────────────────────────────────────────────
     _emit("processing", message="Classifying skills…")
