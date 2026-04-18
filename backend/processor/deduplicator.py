@@ -107,3 +107,62 @@ def _merge_group(group: list) -> SkillRecord:
     primary.tags = list({tag for r in group for tag in r.tags})
     primary.description = max((r.description for r in group), key=len)
     return primary
+
+
+# ---------------------------------------------------------------------------
+# AI enhancement (optional)
+# ---------------------------------------------------------------------------
+
+def ai_enhance_dedup(records: list, fuzzy_low: int = 75, fuzzy_high: int = 91) -> list:
+    """
+    Find borderline fuzzy candidates (score in [fuzzy_low, fuzzy_high]) and ask
+    Claude to confirm which are true duplicates. Merges confirmed pairs.
+    No-op if ANTHROPIC_API_KEY is not set.
+    """
+    try:
+        from ai.deduplicator import ai_find_duplicates
+    except Exception:
+        return records
+
+    names = [r.skill_name for r in records]
+    candidate_pairs: list[tuple[str, str]] = []
+
+    used_indices: set[int] = set()
+    for i, record in enumerate(records):
+        if i in used_indices:
+            continue
+        results = process.extract(
+            record.skill_name,
+            names,
+            scorer=fuzz.token_sort_ratio,
+            score_cutoff=fuzzy_low,
+            limit=None,
+        )
+        for _, score_val, j in results:
+            if j != i and j not in used_indices and score_val <= fuzzy_high:
+                candidate_pairs.append((record.skill_name, records[j].skill_name))
+
+    if not candidate_pairs:
+        return records
+
+    confirmed = ai_find_duplicates(candidate_pairs)
+
+    # Merge confirmed duplicate pairs
+    name_to_idx = {r.skill_name: i for i, r in enumerate(records)}
+    merged_indices: set[int] = set()
+    final = []
+
+    for i, record in enumerate(records):
+        if i in merged_indices:
+            continue
+        group = [record]
+        for a, b in confirmed:
+            if a == record.skill_name and b in name_to_idx:
+                j = name_to_idx[b]
+                if j not in merged_indices and j != i:
+                    group.append(records[j])
+                    merged_indices.add(j)
+        merged_indices.add(i)
+        final.append(_merge_group(group))
+
+    return final
