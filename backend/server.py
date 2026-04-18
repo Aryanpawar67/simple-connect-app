@@ -40,6 +40,7 @@ except ImportError:
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
+from pydantic import BaseModel
 
 # Lazy import — playwright + Chromium are only available in local/Docker envs,
 # not on Vercel serverless. Import deferred to the point of use.
@@ -585,7 +586,7 @@ async def skills_trends(runs: int = Query(5, ge=1, le=20)):
     return ai_analyze_trends(run_history, recent_skills)
 
 
-class ExplainRequest(BaseModel):
+class ExplainRequest(BaseModel):  # noqa: F811 — defined here after BaseModel import
     skills: list[dict]
 
 
@@ -656,7 +657,6 @@ async def skills_history_download(run_date: str, format: str = Query("csv")):
 # Taxonomy Manager — config & state
 # ---------------------------------------------------------------------------
 
-from pydantic import BaseModel
 from db.client import open_db as _open_db
 from db.taxonomy_db import (
     get_stats      as _tax_stats,
