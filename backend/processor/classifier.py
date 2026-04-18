@@ -192,3 +192,20 @@ def _infer_skill_type_from_source(record: SkillRecord) -> str:
         "product_hunt": "Product",
     }
     return source_to_type.get(record.source, "Tool/CLI")
+
+
+# ---------------------------------------------------------------------------
+# AI enhancement (optional — only runs when ANTHROPIC_API_KEY is set)
+# ---------------------------------------------------------------------------
+
+def ai_enhance_classification(records: list) -> list:
+    """
+    Run AI classification on any records still missing a category.
+    Called from api_bridge.py after the full classify() pass.
+    No-op if ANTHROPIC_API_KEY is not set.
+    """
+    try:
+        from ai.classifier import ai_classify
+        return ai_classify(records)
+    except Exception:
+        return records

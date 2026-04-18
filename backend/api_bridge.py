@@ -117,8 +117,16 @@ async def run_bridge(sources: list, threshold: float, formats: list, event_queue
     _emit("processing", message="Classifying skills…")
     records = [classify(r) for r in all_records]
 
+    _emit("processing", message="AI-enhancing unclassified skills…")
+    from processor.classifier import ai_enhance_classification
+    records = ai_enhance_classification(records)
+
     _emit("processing", message="Deduplicating…")
     records = deduplicate(records)
+
+    _emit("processing", message="AI semantic dedup check…")
+    from processor.deduplicator import ai_enhance_dedup
+    records = ai_enhance_dedup(records)
     dedup_count = len(records)
 
     _emit("processing", message="Scoring confidence…")
