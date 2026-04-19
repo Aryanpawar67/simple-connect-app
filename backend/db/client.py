@@ -89,6 +89,20 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
 CREATE INDEX IF NOT EXISTS idx_scrape_runs_date ON scrape_runs(run_date DESC);
 """
 
+_CHANGELOG_RUNS_DDL = """
+CREATE TABLE IF NOT EXISTS changelog_runs (
+    id              SERIAL PRIMARY KEY,
+    run_date        DATE NOT NULL,
+    filter_desc     TEXT NOT NULL DEFAULT '',
+    filename        TEXT NOT NULL DEFAULT '',
+    total_records   INT  NOT NULL DEFAULT 0,
+    matched_records INT  NOT NULL DEFAULT 0,
+    raw_records     JSONB NOT NULL DEFAULT '[]',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_changelog_runs_date ON changelog_runs(run_date DESC);
+"""
+
 
 def _normalize(name: str) -> str:
     """
@@ -122,6 +136,7 @@ class SkillsDB:
             cur.execute(_ALTER_DDL)
             cur.execute(_SCRAPE_RUNS_DDL)
             cur.execute(_REJECTED_DDL)
+            cur.execute(_CHANGELOG_RUNS_DDL)
         self._conn.commit()
         log.debug("DB schema ready.")
 
@@ -495,6 +510,63 @@ class SkillsDB:
             count = len(to_promote)
         self._conn.commit()
         return count
+
+    # ------------------------------------------------------------------
+    # Changelog runs
+    # ------------------------------------------------------------------
+
+    def save_changelog_run(
+        self,
+        run_date,
+        filter_desc: str,
+        filename: str,
+        total_records: int,
+        matched_records: int,
+        raw_records: list,
+    ) -> int:
+        """Insert a changelog scrape run and return its id."""
+        import json as _json
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO changelog_runs
+                    (run_date, filter_desc, filename, total_records, matched_records, raw_records)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                RETURNING id
+                """,
+                (run_date, filter_desc, filename, total_records, matched_records,
+                 _json.dumps(raw_records)),
+            )
+            row_id = cur.fetchone()[0]
+        self._conn.commit()
+        return row_id
+
+    def list_changelog_runs(self, limit: int = 50) -> list:
+        """Return changelog runs newest first."""
+        with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, run_date, filter_desc, filename,
+                       total_records, matched_records,
+                       jsonb_array_length(raw_records) AS stored_records,
+                       created_at
+                FROM changelog_runs
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_changelog_records(self, run_id: int) -> list:
+        """Return raw records stored for a given changelog run."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT raw_records FROM changelog_runs WHERE id = %s",
+                (run_id,),
+            )
+            row = cur.fetchone()
+        return row[0] if row else []
 
     def merged_skills_summary(self) -> dict:
         """Return count of merged vs unmerged skills and per-date breakdown."""

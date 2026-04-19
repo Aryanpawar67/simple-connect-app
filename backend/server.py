@@ -120,9 +120,39 @@ def _read_changelog_history() -> list:
         return []
 
 
-def _append_changelog_history(entry: dict):
+def _append_changelog_history(entry: dict, records: list | None = None):
+    """Persist a changelog run.
+
+    Writes to Neon DB when DATABASE_URL is configured (Vercel-safe).
+    Falls back to the local JSON file for environments without a DB.
+    ``records`` is the list of matched DataFrame rows (dicts) used to
+    regenerate the Excel on download.
+    """
+    # Try DB first — lazy import avoids circular-import issues at module load
+    try:
+        from db.client import open_db as _odb
+        import os as _os_cl
+        dsn = _os_cl.environ.get("DATABASE_URL", "")
+        if dsn:
+            db = _odb({"database": {"enabled": True, "dsn": dsn}})
+            if db is not None:
+                import datetime as _dt
+                db.save_changelog_run(
+                    run_date=_dt.date.fromisoformat(entry["date"]),
+                    filter_desc=entry.get("filter", ""),
+                    filename=entry.get("filename", ""),
+                    total_records=entry.get("totalRecords", 0),
+                    matched_records=entry.get("matchedRecords", 0),
+                    raw_records=records or [],
+                )
+                db.close()
+                return  # DB write succeeded — no need for JSON fallback
+    except Exception:
+        pass  # fall through to filesystem
+
+    # Filesystem fallback (local dev without DATABASE_URL)
     history = _read_changelog_history()
-    history.insert(0, entry)          # newest first
+    history.insert(0, entry)
     CHANGELOG_HISTORY_FILE.write_text(json.dumps(history, indent=2))
 
 
@@ -216,16 +246,19 @@ def _run_scraper(
         # Persist job for download
         _jobs[job_id] = {"path": output_path, "filename": filename}
 
-        # Append to persistent history
+        # Append to persistent history (pass filtered rows for on-demand re-export)
         file_size = Path(output_path).stat().st_size
-        _append_changelog_history({
-            "date": datetime.date.today().isoformat(),
-            "filename": filename,
-            "filter": _filter_label(date_filter),
-            "totalRecords": total_records,
-            "matchedRecords": matched_records,
-            "fileSizeBytes": file_size,
-        })
+        _append_changelog_history(
+            {
+                "date": datetime.date.today().isoformat(),
+                "filename": filename,
+                "filter": _filter_label(date_filter),
+                "totalRecords": total_records,
+                "matchedRecords": matched_records,
+                "fileSizeBytes": file_size,
+            },
+            records=scraper.df.to_dict("records"),
+        )
 
         q.put(("complete", json.dumps({
             "jobId": job_id,
@@ -316,9 +349,41 @@ async def changelog_download(job_id: str):
 
 @app.get("/api/changelog/history")
 async def changelog_history():
-    """Return the list of past changelog exports, newest first."""
+    """Return the list of past changelog exports, newest first.
+
+    Reads from Neon DB when available (Vercel-safe); falls back to the local
+    JSON file for dev environments without DATABASE_URL.
+    """
+    import os as _os_ch
+    dsn = _os_ch.environ.get("DATABASE_URL", "")
+    if dsn:
+        try:
+            db = _open_db(_DB_CONFIG)
+            if db is not None:
+                runs = db.list_changelog_runs(limit=50)
+                db.close()
+                result = []
+                for r in runs:
+                    mc = r["matched_records"]
+                    # Rough file-size estimate: ~2 KB base + ~0.15 KB per row
+                    est_bytes = 2048 + mc * 150
+                    kb = est_bytes / 1024
+                    size_str = f"{kb:.0f} KB" if kb < 1024 else f"{kb/1024:.1f} MB"
+                    result.append({
+                        "id": r["id"],
+                        "date": str(r["run_date"]),
+                        "filename": r["filename"],
+                        "filter": r["filter_desc"],
+                        "totalRecords": r["total_records"],
+                        "matchedRecords": r["matched_records"],
+                        "fileSize": size_str,
+                    })
+                return result
+        except Exception:
+            pass  # fall through to filesystem
+
+    # Filesystem fallback
     history = _read_changelog_history()
-    # Attach human-readable file size and confirm file still exists
     enriched = []
     for entry in history:
         path = OUTPUT_DIR / entry["filename"]
@@ -333,10 +398,46 @@ async def changelog_history():
 
 @app.get("/api/changelog/history/{filename}/download")
 async def changelog_history_download(filename: str):
-    """Download a historical changelog export by filename."""
+    """Download a historical changelog export.
+
+    Regenerates the Excel on-demand from records stored in Neon DB.
+    Falls back to serving the file from disk for local dev.
+    """
+    import os as _os_cd
+    dsn = _os_cd.environ.get("DATABASE_URL", "")
+    if dsn:
+        try:
+            db = _open_db(_DB_CONFIG)
+            if db is not None:
+                # Find the run by filename
+                runs = db.list_changelog_runs(limit=200)
+                run = next((r for r in runs if r["filename"] == filename), None)
+                if run is not None:
+                    records = db.get_changelog_records(run["id"])
+                    db.close()
+                    if records:
+                        import pandas as _pd
+                        from io import BytesIO as _BytesIO
+                        from lightcast_changelog_scraper import LightcastChangelogScraper
+                        scraper = LightcastChangelogScraper(url=CHANGELOG_URL)
+                        scraper.df = _pd.DataFrame(records)
+                        tmp_path = f"/tmp/taxotrack/dl_{uuid.uuid4().hex}.xlsx"
+                        Path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+                        scraper.export_to_excel(tmp_path)
+                        return FileResponse(
+                            path=tmp_path,
+                            filename=filename,
+                            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )
+                else:
+                    db.close()
+        except Exception:
+            pass  # fall through to filesystem
+
+    # Filesystem fallback
     path = _safe_filename(filename, OUTPUT_DIR)
     if not path.exists():
-        raise HTTPException(status_code=404, detail="File not found.")
+        raise HTTPException(status_code=404, detail="File not found or has expired.")
     return FileResponse(
         path=str(path),
         filename=path.name,
@@ -541,7 +642,12 @@ async def skills_download(job_id: str, format: str = Query("csv")):
 
 @app.get("/api/skills/history")
 async def skills_history():
-    """Return list of past scrape runs from Neon DB."""
+    """Return list of past scrape runs from Neon DB.
+
+    Response shape matches the frontend HistoryEntry interface:
+      { date, rows, newSkills, fileSize, formats }
+    Both CSV and XLSX are always available (generated on-demand from DB).
+    """
     db = _open_db(_DB_CONFIG)
     if db is None:
         return []
@@ -549,19 +655,21 @@ async def skills_history():
         runs = db.list_runs(limit=50)
     finally:
         db.close()
-    return [
-        {
-            "job_id": r["job_id"],
-            "run_date": str(r["run_date"]),
-            "final_count": r["final_count"],
-            "new_count": r["new_count"],
-            "returning_count": r["returning_count"],
-            "raw_count": r["raw_count"],
-            "sources": r["sources"],
-            "completed_at": str(r["completed_at"]),
-        }
-        for r in runs
-    ]
+
+    result = []
+    for r in runs:
+        final = r["final_count"]
+        # Rough size estimate: ~0.1 KB per skill row for CSV
+        est_kb = max(1, round(final * 0.1))
+        size_str = f"~{est_kb} KB"
+        result.append({
+            "date": str(r["run_date"]),
+            "rows": final,
+            "newSkills": r["new_count"],
+            "fileSize": size_str,
+            "formats": ["CSV", "XLSX"],
+        })
+    return result
 
 
 @app.get("/api/skills/trends")
