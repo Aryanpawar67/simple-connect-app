@@ -90,7 +90,7 @@ OUTPUT_DIR = (
 )
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-CHANGELOG_URL = "https://docs.lightcast.dev/updates/skills-taxonomy-changelog"
+CHANGELOG_URL = "https://emsiservices.com/docs-site-proxy?url=https://emsiservices.com/skills/docs/data-changelog"
 CHANGELOG_HISTORY_FILE = OUTPUT_DIR / "changelog_history.json"
 
 # In-memory job store: job_id -> {"path": str, "filename": str}

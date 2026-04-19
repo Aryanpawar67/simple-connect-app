@@ -49,7 +49,9 @@ class LightcastChangelogScraper:
 
     def fetch_page(self) -> bool:
         """
-        Fetch the changelog page using httpx (GitBook pages are server-side rendered).
+        Fetch the changelog data directly from the Lightcast content API.
+        The GitBook frontend proxies content from emsiservices.com — we call
+        that endpoint directly so no JS rendering is needed.
 
         Returns:
             bool: True if successful, False otherwise
@@ -58,7 +60,7 @@ class LightcastChangelogScraper:
             import httpx
             resp = httpx.get(self.url, timeout=30, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
             resp.raise_for_status()
-            self.soup = BeautifulSoup(resp.text, "html.parser")
+            self.raw_text = resp.text
             return True
         except Exception as e:
             print(f"Error fetching page: {e}")
@@ -151,11 +153,14 @@ class LightcastChangelogScraper:
         # Remove bullet points and common list markers
         text = re.sub(r'^[\s\-\*\•\◦\▪\▫\–\—]+', '', text)
 
+        # Remove Lightcast skill IDs: (KS1234567890ABCDEF) or (ES...)
+        text = re.sub(r'\s*\([A-Z0-9]{15,}\)\s*', ' ', text)
+
         # Remove extra whitespace
         text = ' '.join(text.split())
 
-        # Remove surrounding quotes if present
-        text = text.strip('\'"')
+        # Remove surrounding quotes and whitespace (handles mixed '"..." ' patterns)
+        text = re.sub(r'^[\s\'"]+|[\s\'"]+$', '', text)
 
         return text.strip()
 
@@ -341,143 +346,141 @@ class LightcastChangelogScraper:
         """
         Scrape all changelog sections from the page.
 
+        The API returns Markdown with embedded HTML blocks:
+          ## 9.42 (April 01, 2026)        ← version header
+          ### Changed                       ← category (resets current tab)
+          <div data-tab="Renames (7)">     ← tab label
+          * Renamed `"X" (ID)` to `Y`     ← skill entry
+          </div>                            ← ends tab
+
+        We parse line-by-line so no HTML renderer is needed.
+
         Returns:
             bool: True if successful, False otherwise
         """
-        if not self.soup:
+        if not getattr(self, 'raw_text', None):
             print("❌ No page content available. Call fetch_page() first.")
             return False
 
         print("\n🔍 Parsing changelog sections...")
 
-        # Find all h2 headers with version/date info
-        h2_headers = []
-        for h2 in self.soup.find_all('h2'):
-            h2_text = h2.get_text(strip=True)
-            if re.search(r'\d+\.\d+\s*\([A-Za-z]+\s+\d+,\s+\d{4}\)', h2_text):
-                h2_headers.append(h2)
+        lines = self.raw_text.splitlines()
+        current_month_display = None
+        current_month_sortable = None
+        current_version = None
+        current_tab = None        # stripped label, e.g. "Renames"
+        entries_in_section = 0
+        version_count = 0
 
-        if not h2_headers:
-            print("❌ No version headers found.")
-            return False
+        for line in lines:
+            s = line.strip()
 
-        print(f"📦 Found {len(h2_headers)} version sections to process\n")
-
-        # Process each h2 section
-        for h2 in h2_headers:
-            header_text = h2.get_text(strip=True)
-            month_year_display, month_year_sortable = self.parse_month_year(header_text)
-            version = self.parse_version(header_text)
-
-            if not month_year_display:
-                print(f"⚠️  Could not parse month/year from: {header_text}")
+            # ── Version header: ## 9.42 (April 01, 2026) ─────────────────────
+            if s.startswith('## '):
+                if current_month_display and entries_in_section:
+                    print(f"  ✓ Extracted {entries_in_section} entries")
+                header_text = s[3:].strip()
+                if re.search(r'\d+\.\d+\s*\([A-Za-z]+\s+\d+,\s+\d{4}\)', header_text):
+                    current_month_display, current_month_sortable = self.parse_month_year(header_text)
+                    current_version = self.parse_version(header_text)
+                    current_tab = None
+                    entries_in_section = 0
+                    version_count += 1
+                    if current_month_display:
+                        print(f"📅 Processing: {current_month_display} {current_version or ''}")
                 continue
 
-            print(f"📅 Processing: {month_year_display} {version if version else ''}")
+            # ── Category heading: ### Changed / Added / Removed ───────────────
+            if s.startswith('### '):
+                current_tab = None
+                continue
 
-            # Find all h3 sections after this h2 until the next h2
-            current = h2.next_sibling
-            entries_in_section = 0
+            # ── Tab opening: <div data-tab="Renames (7)"> ─────────────────────
+            if 'data-tab=' in s:
+                m = re.search(r'data-tab=["\']([^"\']+)["\']', s)
+                if m:
+                    # Strip trailing count "(N)" to get a clean label
+                    current_tab = re.sub(r'\s*\(\d+\)\s*$', '', m.group(1)).strip()
+                continue
 
-            while current:
-                # Stop at next h2
-                if hasattr(current, 'name') and current.name == 'h2':
-                    break
+            # ── Closing div: reset tab so items between tabs are ignored ───────
+            if s == '</div>':
+                current_tab = None
+                continue
 
-                # Look for h3 headers (Changed, Added, Removed, etc.)
-                if hasattr(current, 'name') and current.name == 'h3':
-                    category = current.get_text(strip=True)
+            # ── Skill list item: * Renamed `"X" (ID)` to `Y` ─────────────────
+            if s.startswith('* ') and current_month_display and current_tab:
+                skill_text = s[2:].strip()
+                # Strip backtick code spans: `text` → text
+                skill_text = re.sub(r'`([^`]*)`', r'\1', skill_text)
 
-                    # Find the tabs div that follows this h3
-                    tabs_sibling = current.next_sibling
-                    while tabs_sibling:
-                        if hasattr(tabs_sibling, 'name'):
-                            if tabs_sibling.name in ['h2', 'h3']:
-                                break
-                            if tabs_sibling.name == 'div' and 'tabs' in tabs_sibling.get('class', []):
-                                # Found the tabs container!
-                                tab_divs = tabs_sibling.find_all('div', attrs={'data-tab': True}, recursive=False)
-                                for tab_div in tab_divs:
-                                    tab_name = tab_div.get('data-tab', '')
-                                    change_type = f"{category} - {tab_name}" if tab_name else category
+                change_type = current_tab
 
-                                    # Find all UL in this tab div
-                                    for ul in tab_div.find_all('ul', recursive=False):
-                                        for li in ul.find_all('li', recursive=False):
-                                            skill_text = li.get_text(strip=True)
-                                            if not skill_text:
-                                                continue
+                if 'rename' in change_type.lower():
+                    renamed_match = re.search(r'Renamed\s+(.+?)\s+to\s+(.+?)$', skill_text, re.IGNORECASE)
+                    if renamed_match:
+                        original = self.clean_skill_text(renamed_match.group(1))
+                        new = self.clean_skill_text(renamed_match.group(2))
+                        self.raw_data.append({
+                            'Month_Year_Display': current_month_display,
+                            'Month_Year_Sortable': current_month_sortable,
+                            'Version': current_version or '',
+                            'Change_Type': 'Renamed',
+                            'Skill_Name': new,
+                            'Original_Name': original,
+                            'Notes': ''
+                        })
+                    else:
+                        self.raw_data.append({
+                            'Month_Year_Display': current_month_display,
+                            'Month_Year_Sortable': current_month_sortable,
+                            'Version': current_version or '',
+                            'Change_Type': change_type,
+                            'Skill_Name': self.clean_skill_text(skill_text),
+                            'Original_Name': '',
+                            'Notes': ''
+                        })
+                elif 'consolidat' in change_type.lower():
+                    consol_match = re.search(r'Consolidated\s+(.+?)\s+into\s+(.+?)$', skill_text, re.IGNORECASE)
+                    if consol_match:
+                        original = self.clean_skill_text(consol_match.group(1))
+                        new = self.clean_skill_text(consol_match.group(2))
+                        self.raw_data.append({
+                            'Month_Year_Display': current_month_display,
+                            'Month_Year_Sortable': current_month_sortable,
+                            'Version': current_version or '',
+                            'Change_Type': 'Consolidated',
+                            'Skill_Name': new,
+                            'Original_Name': original,
+                            'Notes': ''
+                        })
+                    else:
+                        self.raw_data.append({
+                            'Month_Year_Display': current_month_display,
+                            'Month_Year_Sortable': current_month_sortable,
+                            'Version': current_version or '',
+                            'Change_Type': change_type,
+                            'Skill_Name': self.clean_skill_text(skill_text),
+                            'Original_Name': '',
+                            'Notes': ''
+                        })
+                else:
+                    self.raw_data.append({
+                        'Month_Year_Display': current_month_display,
+                        'Month_Year_Sortable': current_month_sortable,
+                        'Version': current_version or '',
+                        'Change_Type': change_type,
+                        'Skill_Name': self.clean_skill_text(skill_text),
+                        'Original_Name': '',
+                        'Notes': ''
+                    })
+                entries_in_section += 1
 
-                                            # Parse based on change type
-                                            if 'rename' in tab_name.lower():
-                                                renamed_match = re.search(r'Renamed\s+(.+?)\s+to\s+(.+?)$', skill_text, re.IGNORECASE)
-                                                if renamed_match:
-                                                    original = self.clean_skill_text(renamed_match.group(1))
-                                                    new = self.clean_skill_text(renamed_match.group(2))
-                                                    self.raw_data.append({
-                                                        'Month_Year_Display': month_year_display,
-                                                        'Month_Year_Sortable': month_year_sortable,
-                                                        'Version': version or '',
-                                                        'Change_Type': 'Renamed',
-                                                        'Skill_Name': new,
-                                                        'Original_Name': original,
-                                                        'Notes': ''
-                                                    })
-                                                    entries_in_section += 1
-                                                else:
-                                                    self.raw_data.append({
-                                                        'Month_Year_Display': month_year_display,
-                                                        'Month_Year_Sortable': month_year_sortable,
-                                                        'Version': version or '',
-                                                        'Change_Type': change_type,
-                                                        'Skill_Name': self.clean_skill_text(skill_text),
-                                                        'Original_Name': '',
-                                                        'Notes': ''
-                                                    })
-                                                    entries_in_section += 1
-                                            elif 'consolidation' in tab_name.lower():
-                                                consol_match = re.search(r'Consolidated\s+(.+?)\s+into\s+(.+?)$', skill_text, re.IGNORECASE)
-                                                if consol_match:
-                                                    original = self.clean_skill_text(consol_match.group(1))
-                                                    new = self.clean_skill_text(consol_match.group(2))
-                                                    self.raw_data.append({
-                                                        'Month_Year_Display': month_year_display,
-                                                        'Month_Year_Sortable': month_year_sortable,
-                                                        'Version': version or '',
-                                                        'Change_Type': 'Consolidated',
-                                                        'Skill_Name': new,
-                                                        'Original_Name': original,
-                                                        'Notes': ''
-                                                    })
-                                                    entries_in_section += 1
-                                                else:
-                                                    self.raw_data.append({
-                                                        'Month_Year_Display': month_year_display,
-                                                        'Month_Year_Sortable': month_year_sortable,
-                                                        'Version': version or '',
-                                                        'Change_Type': change_type,
-                                                        'Skill_Name': self.clean_skill_text(skill_text),
-                                                        'Original_Name': '',
-                                                        'Notes': ''
-                                                    })
-                                                    entries_in_section += 1
-                                            else:
-                                                self.raw_data.append({
-                                                    'Month_Year_Display': month_year_display,
-                                                    'Month_Year_Sortable': month_year_sortable,
-                                                    'Version': version or '',
-                                                    'Change_Type': change_type,
-                                                    'Skill_Name': self.clean_skill_text(skill_text),
-                                                    'Original_Name': '',
-                                                    'Notes': ''
-                                                })
-                                                entries_in_section += 1
-                                break
-                        tabs_sibling = tabs_sibling.next_sibling
-
-                current = current.next_sibling
-
+        # Print count for last section
+        if current_month_display and entries_in_section:
             print(f"  ✓ Extracted {entries_in_section} entries")
+
+        print(f"\n📦 Found {version_count} version sections")
 
         if not self.raw_data:
             print("❌ No data extracted from the page.")
