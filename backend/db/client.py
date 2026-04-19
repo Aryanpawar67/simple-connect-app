@@ -47,6 +47,30 @@ _ALTER_DDL = """
 ALTER TABLE skills ADD COLUMN IF NOT EXISTS taxonomy_merged_at DATE DEFAULT NULL;
 ALTER TABLE skills ADD COLUMN IF NOT EXISTS taxonomy_domain    TEXT NOT NULL DEFAULT '';
 ALTER TABLE skills ADD COLUMN IF NOT EXISTS taxonomy_subdomain TEXT NOT NULL DEFAULT '';
+ALTER TABLE skills ADD COLUMN IF NOT EXISTS reclaim_dismissed_at DATE DEFAULT NULL;
+"""
+
+_REJECTED_DDL = """
+CREATE TABLE IF NOT EXISTS rejected_skills (
+    id               SERIAL PRIMARY KEY,
+    skill_name       TEXT    NOT NULL,
+    normalized_name  TEXT    NOT NULL,
+    category         TEXT    NOT NULL DEFAULT '',
+    subcategory      TEXT    NOT NULL DEFAULT '',
+    source           TEXT    NOT NULL DEFAULT '',
+    confidence_score REAL    NOT NULL DEFAULT 0.0,
+    popularity       INTEGER NOT NULL DEFAULT 0,
+    rejection_reason TEXT    NOT NULL DEFAULT 'below_threshold',
+    first_rejected_at DATE   NOT NULL,
+    last_rejected_at  DATE   NOT NULL,
+    times_rejected   INTEGER NOT NULL DEFAULT 1,
+    dismissed        BOOLEAN NOT NULL DEFAULT FALSE,
+    dismissed_at     TIMESTAMPTZ      DEFAULT NULL,
+    CONSTRAINT uq_rejected_normalized UNIQUE (normalized_name)
+);
+CREATE INDEX IF NOT EXISTS idx_rejected_confidence ON rejected_skills (confidence_score DESC);
+CREATE INDEX IF NOT EXISTS idx_rejected_date ON rejected_skills (last_rejected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rejected_dismissed ON rejected_skills (dismissed);
 """
 
 _SCRAPE_RUNS_DDL = """
@@ -97,6 +121,7 @@ class SkillsDB:
             cur.execute(_DDL)
             cur.execute(_ALTER_DDL)
             cur.execute(_SCRAPE_RUNS_DDL)
+            cur.execute(_REJECTED_DDL)
         self._conn.commit()
         log.debug("DB schema ready.")
 
@@ -338,6 +363,138 @@ class SkillsDB:
                 (run_date,),
             )
             return [dict(r) for r in cur.fetchall()]
+
+    def upsert_rejected_skills(self, records: list, run_date, reason: str = "below_threshold") -> None:
+        """Save below-threshold skills for later reclamation review."""
+        if not records:
+            return
+        rows = []
+        for r in records:
+            key = _normalize(r.skill_name)
+            if not key:
+                continue
+            rows.append((
+                r.skill_name, key,
+                r.category or "", r.subcategory or "",
+                r.source or "", r.confidence_score, r.popularity,
+                reason, run_date, run_date,
+            ))
+        if not rows:
+            return
+        with self._conn.cursor() as cur:
+            psycopg2.extras.execute_batch(
+                cur,
+                """
+                INSERT INTO rejected_skills
+                    (skill_name, normalized_name, category, subcategory, source,
+                     confidence_score, popularity, rejection_reason,
+                     first_rejected_at, last_rejected_at, times_rejected)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1)
+                ON CONFLICT (normalized_name) DO UPDATE SET
+                    last_rejected_at  = EXCLUDED.last_rejected_at,
+                    times_rejected    = rejected_skills.times_rejected + 1,
+                    confidence_score  = GREATEST(rejected_skills.confidence_score, EXCLUDED.confidence_score),
+                    popularity        = GREATEST(rejected_skills.popularity, EXCLUDED.popularity),
+                    dismissed         = FALSE
+                """,
+                rows,
+                page_size=200,
+            )
+        self._conn.commit()
+
+    def get_reclaim_pool(self, pool: str = "all", limit: int = 500) -> dict:
+        """Return rejected + unmerged skills for monthly review."""
+        result = {"rejected": [], "unmerged": []}
+        with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if pool in ("all", "rejected"):
+                cur.execute("""
+                    SELECT id, skill_name, category, subcategory, source,
+                           confidence_score, popularity, rejection_reason,
+                           first_rejected_at::text, last_rejected_at::text, times_rejected
+                    FROM rejected_skills
+                    WHERE dismissed = FALSE
+                    ORDER BY times_rejected DESC, confidence_score DESC
+                    LIMIT %s
+                """, (limit,))
+                result["rejected"] = [dict(r) for r in cur.fetchall()]
+            if pool in ("all", "unmerged"):
+                cur.execute("""
+                    SELECT id, skill_name, category, subcategory, source,
+                           confidence_score, popularity,
+                           first_seen::text, last_seen::text, run_count
+                    FROM skills
+                    WHERE taxonomy_merged_at IS NULL
+                      AND (reclaim_dismissed_at IS NULL)
+                      AND first_seen <= CURRENT_DATE - INTERVAL '7 days'
+                      AND confidence_score < 0.6
+                    ORDER BY run_count DESC, confidence_score DESC
+                    LIMIT %s
+                """, (limit,))
+                result["unmerged"] = [dict(r) for r in cur.fetchall()]
+        return result
+
+    def dismiss_rejected(self, ids: list) -> int:
+        if not ids:
+            return 0
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "UPDATE rejected_skills SET dismissed = TRUE, dismissed_at = NOW() WHERE id = ANY(%s)",
+                (ids,)
+            )
+            count = cur.rowcount
+        self._conn.commit()
+        return count
+
+    def dismiss_unmerged(self, ids: list) -> int:
+        if not ids:
+            return 0
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "UPDATE skills SET reclaim_dismissed_at = CURRENT_DATE WHERE id = ANY(%s)",
+                (ids,)
+            )
+            count = cur.rowcount
+        self._conn.commit()
+        return count
+
+    def promote_rejected(self, ids: list, run_date) -> int:
+        """Move rejected skills into the main skills table and mark as dismissed in rejected pool."""
+        if not ids:
+            return 0
+        with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT skill_name, normalized_name, category, subcategory,
+                       source, confidence_score, popularity
+                FROM rejected_skills
+                WHERE id = ANY(%s) AND dismissed = FALSE
+            """, (ids,))
+            to_promote = cur.fetchall()
+            if not to_promote:
+                return 0
+            psycopg2.extras.execute_batch(
+                cur,
+                """
+                INSERT INTO skills
+                    (skill_name, normalized_name, category, subcategory, skill_type,
+                     source, confidence_score, popularity, language, tags,
+                     first_seen, last_seen, run_count)
+                VALUES (%s, %s, %s, %s, '', %s, %s, %s, '', '', %s, %s, 1)
+                ON CONFLICT (normalized_name) DO UPDATE SET
+                    confidence_score = GREATEST(skills.confidence_score, EXCLUDED.confidence_score),
+                    last_seen = EXCLUDED.last_seen,
+                    run_count = skills.run_count + 1
+                """,
+                [(r['skill_name'], r['normalized_name'], r['category'], r['subcategory'],
+                  r['source'], r['confidence_score'], r['popularity'],
+                  run_date, run_date) for r in to_promote],
+            )
+            cur.execute(
+                "UPDATE rejected_skills SET dismissed = TRUE, dismissed_at = NOW() WHERE id = ANY(%s)",
+                (ids,)
+            )
+            count = len(to_promote)
+        self._conn.commit()
+        return count
 
     def merged_skills_summary(self) -> dict:
         """Return count of merged vs unmerged skills and per-date breakdown."""

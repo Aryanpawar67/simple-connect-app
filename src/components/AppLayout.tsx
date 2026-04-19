@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { Search, GitCompareArrows, Menu, X, Database } from "lucide-react";
+import { Search, GitCompareArrows, Menu, X, Database, Recycle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface AppLayoutProps {
   children: React.ReactNode;
-  activeTool: "scraper" | "changelog" | "taxonomy";
-  onToolChange: (tool: "scraper" | "changelog" | "taxonomy") => void;
+  activeTool: "scraper" | "changelog" | "taxonomy" | "reclaim";
+  onToolChange: (tool: "scraper" | "changelog" | "taxonomy" | "reclaim") => void;
 }
 
 const navItems = [
@@ -26,6 +26,12 @@ const navItems = [
     label: "Taxonomy Manager",
     description: "Merge & manage master list",
     icon: Database,
+  },
+  {
+    id: "reclaim" as const,
+    label: "Skill Reclamation",
+    description: "Review & rescue rejected skills",
+    icon: Recycle,
   },
 ];
 

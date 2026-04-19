@@ -725,6 +725,82 @@ class MergeRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Skill Reclamation Pool
+# ---------------------------------------------------------------------------
+
+class ReclaimActionRequest(BaseModel):
+    ids: list[int]
+    pool: str = "rejected"  # "rejected" or "unmerged"
+
+
+class ReclaimReviewRequest(BaseModel):
+    skills: list[dict]
+
+
+@app.get("/api/skills/reclaim-pool")
+async def reclaim_pool_get(pool: str = Query("all")):
+    """Return rejected + unmerged skills for monthly reclamation review."""
+    db = _open_db(_DB_CONFIG)
+    if db is None:
+        raise HTTPException(status_code=503, detail="DB unavailable.")
+    try:
+        data = db.get_reclaim_pool(pool=pool)
+    finally:
+        db.close()
+    return {
+        "rejected": data["rejected"],
+        "unmerged": data["unmerged"],
+        "rejected_count": len(data["rejected"]),
+        "unmerged_count": len(data["unmerged"]),
+    }
+
+
+@app.post("/api/skills/reclaim-pool/ai-review")
+async def reclaim_ai_review(body: ReclaimReviewRequest):
+    """Run Claude review on a list of reclaim-pool skills."""
+    if not body.skills:
+        raise HTTPException(status_code=400, detail="No skills provided.")
+    from ai.reclaimer import ai_review_rejected_skills
+    return {"recommendations": ai_review_rejected_skills(body.skills)}
+
+
+@app.post("/api/skills/reclaim-pool/promote")
+async def reclaim_promote(body: ReclaimActionRequest):
+    """Promote skills from reclaim pool into the active skills table."""
+    from datetime import date
+    db = _open_db(_DB_CONFIG)
+    if db is None:
+        raise HTTPException(status_code=503, detail="DB unavailable.")
+    try:
+        if body.pool == "rejected":
+            count = db.promote_rejected(body.ids, date.today())
+        else:
+            # Unmerged skills are already in skills table — clear their dismissed flag
+            # so they show up in the next taxonomy compare
+            count = db.dismiss_unmerged([])  # no-op, they're already active
+            count = len(body.ids)
+    finally:
+        db.close()
+    return {"promoted": count}
+
+
+@app.post("/api/skills/reclaim-pool/dismiss")
+async def reclaim_dismiss(body: ReclaimActionRequest):
+    """Permanently dismiss skills from the reclaim pool."""
+    db = _open_db(_DB_CONFIG)
+    if db is None:
+        raise HTTPException(status_code=503, detail="DB unavailable.")
+    try:
+        if body.pool == "rejected":
+            count = db.dismiss_rejected(body.ids)
+        else:
+            count = db.dismiss_unmerged(body.ids)
+    finally:
+        db.close()
+    return {"dismissed": count}
+
+
+# ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
 

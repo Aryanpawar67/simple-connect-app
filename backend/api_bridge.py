@@ -150,14 +150,23 @@ async def run_bridge(sources: list, threshold: float, formats: list, event_queue
     dedup_count = len(records)
 
     _emit("processing", message="Scoring confidence…")
-    records = [score(r) for r in records]
-    records = [r for r in records if r.confidence_score >= threshold]
+    records_scored = [score(r) for r in records]
+    rejected_records = [r for r in records_scored if r.confidence_score < threshold]
+    records = [r for r in records_scored if r.confidence_score >= threshold]
     final_count = len(records)
 
     # ── Writing phase ─────────────────────────────────────────────────────────
     _emit("writing", message="Saving files…")
     db = open_db(config)
     run_date = date.today()
+
+    # Persist below-threshold rejects for monthly reclamation review
+    if db is not None and rejected_records:
+        try:
+            db.upsert_rejected_skills(rejected_records, run_date, reason="below_threshold")
+        except Exception:
+            pass
+
     paths = write_output(records, config, run_date=run_date, db=db)
     if db is not None:
         db.close()
