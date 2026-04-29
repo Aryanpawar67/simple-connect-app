@@ -21,6 +21,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Slider } from "@/components/ui/slider";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
+import { apiUrl } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -166,7 +167,7 @@ const TaxonomyManagerPage = () => {
     setOverviewLoading(true);
     setOverviewError("");
     try {
-      const res = await fetch("/api/taxonomy/overview");
+      const res = await fetch(apiUrl("/api/taxonomy/overview"));
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       setOverview(await res.json());
     } catch (e: any) {
@@ -177,18 +178,18 @@ const TaxonomyManagerPage = () => {
   };
 
   const downloadNewSkills = (fmt: "csv" | "xlsx") => {
-    window.open(`/api/taxonomy/new-skills/download?format=${fmt}`, "_blank");
+    window.open(apiUrl(`/api/taxonomy/new-skills/download?format=${fmt}`), "_blank");
   };
 
   const downloadFullTaxonomy = () => {
-    window.open("/api/taxonomy/master/download", "_blank");
+    window.open(apiUrl("/api/taxonomy/master/download"), "_blank");
   };
 
   const loadStats = async () => {
     setStatsLoading(true);
     setStatsError("");
     try {
-      const res = await fetch("/api/taxonomy/stats");
+      const res = await fetch(apiUrl("/api/taxonomy/stats"));
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       setStats(await res.json());
     } catch (e: any) {
@@ -202,7 +203,7 @@ const TaxonomyManagerPage = () => {
     setHistoryLoading(true);
     setHistoryError("");
     try {
-      const res = await fetch("/api/taxonomy/history");
+      const res = await fetch(apiUrl("/api/taxonomy/history"));
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       setHistory(await res.json());
     } catch (e: any) {
@@ -215,7 +216,7 @@ const TaxonomyManagerPage = () => {
   const loadDomainsIndex = useCallback(async () => {
     if (Object.keys(domainsIndex).length > 0) return;
     try {
-      const res = await fetch("/api/taxonomy/domains");
+      const res = await fetch(apiUrl("/api/taxonomy/domains"));
       if (res.ok) setDomainsIndex(await res.json());
     } catch {}
   }, [domainsIndex]);
@@ -233,7 +234,7 @@ const TaxonomyManagerPage = () => {
     setPage(0);
     await loadDomainsIndex();
     try {
-      const res = await fetch("/api/taxonomy/compare");
+      const res = await fetch(apiUrl("/api/taxonomy/compare"));
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data: CompareResult = await res.json();
       setCompareResult(data);
@@ -285,7 +286,7 @@ const TaxonomyManagerPage = () => {
     setMergeError("");
     setMergeResult(null);
     try {
-      const res = await fetch("/api/taxonomy/merge", {
+      const res = await fetch(apiUrl("/api/taxonomy/merge"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ approved_skills: approved }),
@@ -308,11 +309,11 @@ const TaxonomyManagerPage = () => {
 
   const downloadMerged = () => {
     if (!mergeResult) return;
-    window.open(`/api/taxonomy/download/${mergeResult.job_id}`, "_blank");
+    window.open(apiUrl(`/api/taxonomy/download/${mergeResult.job_id}`), "_blank");
   };
 
   const downloadHistoryFile = (filename: string) => {
-    window.open(`/api/taxonomy/history/${filename}/download`, "_blank");
+    window.open(apiUrl(`/api/taxonomy/history/${filename}/download`), "_blank");
   };
 
   // ---------------------------------------------------------------------------

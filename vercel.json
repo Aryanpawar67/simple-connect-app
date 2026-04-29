@@ -1,19 +1,3 @@
 {
-  "experimentalServices": {
-    "frontend": {
-      "routePrefix": "/",
-      "framework": "vite"
-    },
-    "backend": {
-      "entrypoint": "backend",
-      "routePrefix": "/_/backend",
-      "maxDuration": 300
-    }
-  },
-  "rewrites": [
-    {
-      "source": "/api/:path*",
-      "destination": "/_/backend/api/:path*"
-    }
-  ]
+  "framework": "vite"
 }

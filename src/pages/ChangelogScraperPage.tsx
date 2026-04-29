@@ -12,6 +12,7 @@ import {
   History,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -104,7 +105,7 @@ const ChangelogScraperPage = () => {
   useEffect(() => {
     if (activeTab !== "history") return;
     setHistoryLoading(true);
-    fetch("/api/changelog/history")
+    fetch(apiUrl("/api/changelog/history"))
       .then((r) => r.json())
       .then((data) => setHistory(data))
       .catch(() => setHistory([]))
@@ -155,7 +156,7 @@ const ChangelogScraperPage = () => {
       params.append("end", endMonth);
     }
 
-    const es = new EventSource(`/api/changelog/stream?${params}`);
+    const es = new EventSource(apiUrl(`/api/changelog/stream?${params}`));
     esRef.current = es;
 
     es.addEventListener("step", (e) => {
@@ -202,7 +203,7 @@ const ChangelogScraperPage = () => {
   const handleDownload = () => {
     if (!jobId) return;
     const a = document.createElement("a");
-    a.href = `/api/changelog/download/${jobId}`;
+    a.href = apiUrl(`/api/changelog/download/${jobId}`);
     a.download = filename;
     document.body.appendChild(a);
     a.click();
@@ -481,7 +482,7 @@ const ChangelogScraperPage = () => {
                         className="h-8 w-8 p-0"
                         onClick={() => {
                           const a = document.createElement("a");
-                          a.href = `/api/changelog/history/${encodeURIComponent(run.filename)}/download`;
+                          a.href = apiUrl(`/api/changelog/history/${encodeURIComponent(run.filename)}/download`);
                           a.download = run.filename;
                           document.body.appendChild(a);
                           a.click();

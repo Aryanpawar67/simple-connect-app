@@ -19,6 +19,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
@@ -181,7 +182,7 @@ const SkillScraperPage = ({ onGoToTaxonomy }: SkillScraperPageProps) => {
   const loadHistory = async () => {
     setHistoryLoading(true);
     try {
-      const res = await fetch("/api/skills/history");
+      const res = await fetch(apiUrl("/api/skills/history"));
       if (res.ok) {
         setHistory(await res.json());
       }
@@ -231,7 +232,7 @@ const SkillScraperPage = ({ onGoToTaxonomy }: SkillScraperPageProps) => {
       formats: formats.join(",") || "csv",
     });
 
-    const es = new EventSource(`/api/skills/stream?${params}`);
+    const es = new EventSource(apiUrl(`/api/skills/stream?${params}`));
     esRef.current = es;
 
     es.addEventListener("source-start", (e) => {
@@ -293,13 +294,13 @@ const SkillScraperPage = ({ onGoToTaxonomy }: SkillScraperPageProps) => {
   const downloadFile = (format: "csv" | "xlsx") => {
     if (!jobId) return;
     const a = document.createElement("a");
-    a.href = `/api/skills/download/${jobId}?format=${format}`;
+    a.href = apiUrl(`/api/skills/download/${jobId}?format=${format}`);
     a.click();
   };
 
   const downloadHistory = (date: string, format: string) => {
     const a = document.createElement("a");
-    a.href = `/api/skills/history/${date}/download?format=${format.toLowerCase()}`;
+    a.href = apiUrl(`/api/skills/history/${date}/download?format=${format.toLowerCase()}`);
     a.click();
   };
 

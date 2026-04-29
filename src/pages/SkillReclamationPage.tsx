@@ -22,6 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Checkbox } from "@/components/ui/checkbox";
+import { apiUrl } from "@/lib/api";
 
 interface ReclaimItem {
   id: number;
@@ -59,7 +60,7 @@ function PoolBadge({ pool }: { pool: "rejected" | "unmerged" }) {
   );
 }
 
-const API = "/api";
+const API = apiUrl("/api");
 
 export default function SkillReclamationPage() {
   const [poolData, setPoolData] = useState<{
