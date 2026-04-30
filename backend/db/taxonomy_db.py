@@ -5,11 +5,14 @@ Replaces the on-disk Excel master file entirely.
 from __future__ import annotations
 
 import io
+import re
 import datetime
+import unicodedata
 from typing import Optional
 
 import psycopg2
 import psycopg2.extras
+from rapidfuzz import process, fuzz
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS taxonomy (
@@ -32,12 +35,36 @@ CREATE INDEX IF NOT EXISTS idx_taxonomy_sheet      ON taxonomy (sheet);
 """
 
 
-def _normalize(name: str) -> str:
+_PAREN_SUFFIX = re.compile(r"\s*[\(\[\{].*?[\)\]\}]")
+_VERSION_TAIL = re.compile(r"[\s\-_]*v?\d+(\.\d+)*\s*$")
+_WS = re.compile(r"\s+")
+_FUZZY_THRESHOLD = 92
+
+
+def _aliases() -> dict:
     try:
-        from processor.deduplicator import normalize_name
-        return normalize_name(name).lower().strip()
+        from processor.deduplicator import NORMALIZATIONS
+        return {k.lower(): v.lower() for k, v in NORMALIZATIONS.items()}
     except Exception:
-        return name.lower().strip()
+        return {}
+
+
+_ALIASES = _aliases()
+
+
+def _normalize(name: str) -> str:
+    """Comparison key — NFKC + paren strip + whitespace collapse + lowercase + alias."""
+    if not name:
+        return ""
+    s = unicodedata.normalize("NFKC", name)
+    s = _PAREN_SUFFIX.sub("", s)
+    s = _WS.sub(" ", s).strip().lower()
+    return _ALIASES.get(s, s)
+
+
+def _strip_version(norm: str) -> str:
+    """Drop trailing version tokens — 'java 17' → 'java', 'python3.11' → 'python'."""
+    return _VERSION_TAIL.sub("", norm).strip()
 
 
 def get_conn(dsn: str):
@@ -189,6 +216,7 @@ def compare_with_skills(dsn: str, db_skills: list[dict]) -> dict:
         cur.execute("SELECT normalized_name FROM taxonomy")
         taxonomy_norms: set[str] = {r[0] for r in cur.fetchall()}
     conn.close()
+    taxonomy_norms_list = list(taxonomy_norms)
 
     new_skills, unmappable = [], []
     matched = 0
@@ -199,7 +227,25 @@ def compare_with_skills(dsn: str, db_skills: list[dict]) -> dict:
         if not norm:
             continue
 
+        # Layer 1: exact normalized hit (fast set lookup).
         if norm in taxonomy_norms:
+            matched += 1
+            continue
+
+        # Layer 2: drop trailing version, retry exact (also through alias).
+        stripped = _strip_version(norm)
+        if stripped and stripped != norm:
+            stripped = _ALIASES.get(stripped, stripped)
+            if stripped in taxonomy_norms:
+                matched += 1
+                continue
+
+        # Layer 3: fuzzy token-sort fallback against the full taxonomy.
+        if process.extractOne(
+            norm, taxonomy_norms_list,
+            scorer=fuzz.token_sort_ratio,
+            score_cutoff=_FUZZY_THRESHOLD,
+        ):
             matched += 1
             continue
 
@@ -257,11 +303,24 @@ def get_overview(dsn: str, scraped_skills: list[dict]) -> dict:
         cur.execute("SELECT normalized_name FROM taxonomy")
         taxonomy_norms: set[str] = {r[0] for r in cur.fetchall()}
     conn.close()
+    taxonomy_norms_list = list(taxonomy_norms)
 
-    new_count = sum(
-        1 for s in scraped_skills
-        if _normalize(s.get("skill_name", "")) not in taxonomy_norms
-    )
+    def _is_new(name: str) -> bool:
+        norm = _normalize(name)
+        if not norm or norm in taxonomy_norms:
+            return False
+        stripped = _strip_version(norm)
+        if stripped and stripped != norm:
+            stripped = _ALIASES.get(stripped, stripped)
+            if stripped in taxonomy_norms:
+                return False
+        return not process.extractOne(
+            norm, taxonomy_norms_list,
+            scorer=fuzz.token_sort_ratio,
+            score_cutoff=_FUZZY_THRESHOLD,
+        )
+
+    new_count = sum(1 for s in scraped_skills if _is_new(s.get("skill_name", "")))
 
     return {
         "taxonomy_size": taxonomy_size,
