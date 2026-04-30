@@ -78,6 +78,16 @@ interface EditedSkill extends NewSkill {
   isUnmappable: boolean;
 }
 
+interface ScrapeRun {
+  job_id: string;
+  run_date: string;
+  final_count: number;
+  new_count: number;
+  returning_count: number;
+  sources: string;
+  completed_at: string;
+}
+
 interface MergeHistoryEntry {
   date: string;
   added_count: number;
@@ -137,7 +147,12 @@ const TaxonomyManagerPage = () => {
   const [page, setPage] = useState(0);
   const [skillFilter, setSkillFilter] = useState<"all" | "mapped" | "unmappable">("all");
   const [mergeConfidenceThreshold, setMergeConfidenceThreshold] = useState(0.6);
-  const [lastRunOnly, setLastRunOnly] = useState(true);
+
+  // Recent scrape runs (for per-run compare)
+  const [runs, setRuns] = useState<ScrapeRun[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [runsError, setRunsError] = useState("");
+  const [selectedRun, setSelectedRun] = useState<ScrapeRun | null>(null);
 
   // Merge
   const [merging, setMerging] = useState(false);
@@ -161,7 +176,7 @@ const TaxonomyManagerPage = () => {
   useEffect(() => {
     if (activeTab === "stats") loadStats();
     if (activeTab === "history") loadHistory();
-    if (activeTab === "merge" && !compareResult && !compareLoading) runCompare();
+    if (activeTab === "merge") loadRuns();
   }, [activeTab]);
 
   const loadOverview = async () => {
@@ -179,8 +194,23 @@ const TaxonomyManagerPage = () => {
   };
 
   const downloadNewSkills = (fmt: "csv" | "xlsx") => {
-    const scope = lastRunOnly ? "&last_run_only=true" : "";
-    window.open(apiUrl(`/api/taxonomy/new-skills/download?format=${fmt}${scope}`), "_blank");
+    if (!selectedRun) return;
+    const url = `/api/taxonomy/new-skills/download?format=${fmt}&run_date=${encodeURIComponent(selectedRun.run_date)}&job_id=${encodeURIComponent(selectedRun.job_id)}`;
+    window.open(apiUrl(url), "_blank");
+  };
+
+  const loadRuns = async () => {
+    setRunsLoading(true);
+    setRunsError("");
+    try {
+      const res = await fetch(apiUrl("/api/taxonomy/runs?limit=10"));
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      setRuns(await res.json());
+    } catch (e: any) {
+      setRunsError(e.message || "Failed to load scrape runs");
+    } finally {
+      setRunsLoading(false);
+    }
   };
 
   const downloadFullTaxonomy = () => {
@@ -227,7 +257,13 @@ const TaxonomyManagerPage = () => {
   // Compare
   // ---------------------------------------------------------------------------
 
-  const runCompare = async () => {
+  const runCompare = async (run?: ScrapeRun) => {
+    const target = run ?? selectedRun;
+    if (!target) {
+      setCompareError("Select a scrape run above to compare.");
+      return;
+    }
+    setSelectedRun(target);
     setCompareLoading(true);
     setCompareError("");
     setCompareResult(null);
@@ -236,7 +272,8 @@ const TaxonomyManagerPage = () => {
     setPage(0);
     await loadDomainsIndex();
     try {
-      const res = await fetch(apiUrl(`/api/taxonomy/compare${lastRunOnly ? "?last_run_only=true" : ""}`));
+      const qs = `?run_date=${encodeURIComponent(target.run_date)}&job_id=${encodeURIComponent(target.job_id)}`;
+      const res = await fetch(apiUrl(`/api/taxonomy/compare${qs}`));
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data: CompareResult = await res.json();
       setCompareResult(data);
@@ -500,7 +537,7 @@ const TaxonomyManagerPage = () => {
               <Button size="sm" onClick={downloadMerged}>
                 <Download className="w-4 h-4 mr-2" />Download New Master
               </Button>
-              <Button variant="outline" size="sm" onClick={runCompare}>
+              <Button variant="outline" size="sm" onClick={() => selectedRun && runCompare(selectedRun)}>
                 <RefreshCw className="w-4 h-4 mr-2" />Run New Comparison
               </Button>
             </div>
@@ -510,44 +547,89 @@ const TaxonomyManagerPage = () => {
         {/* ── COMPARE + REVIEW FLOW ── */}
         {!mergeResult && (
           <>
-            {/* Action row */}
-            <div className="flex items-center gap-3 flex-wrap">
-              <Button
-                onClick={runCompare}
-                disabled={compareLoading || merging}
-                variant={compareResult ? "outline" : "default"}
-              >
-                {compareLoading
-                  ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" />Comparing…</>
-                  : compareResult
-                    ? <><RefreshCw className="w-4 h-4 mr-2" />Re-compare</>
-                    : <><RefreshCw className="w-4 h-4 mr-2" />Run Comparison</>}
-              </Button>
-              <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
-                <Checkbox
-                  checked={lastRunOnly}
-                  onCheckedChange={(v) => setLastRunOnly(!!v)}
-                  disabled={compareLoading || merging}
-                />
-                <span>
-                  Latest scrape only
-                  <span className="text-muted-foreground ml-1">
-                    ({lastRunOnly ? "fast — current run's skills" : "all historical skills (slow)"})
-                  </span>
-                </span>
-              </label>
+            {/* Recent scrape runs */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold">Recent scrape runs</h3>
+                <Button variant="ghost" size="sm" onClick={loadRuns} disabled={runsLoading}>
+                  <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${runsLoading ? "animate-spin" : ""}`} />
+                  Refresh
+                </Button>
+              </div>
+              {runsError && <div className="text-sm text-red-600">{runsError}</div>}
+              {runsLoading && runs.length === 0 && (
+                <div className="text-sm text-muted-foreground">Loading runs…</div>
+              )}
+              {!runsLoading && runs.length === 0 && !runsError && (
+                <div className="text-sm text-muted-foreground">No scrape runs found yet.</div>
+              )}
+              <div className="flex gap-3 overflow-x-auto pb-2">
+                {runs.map((r) => {
+                  const isSelected = selectedRun?.job_id === r.job_id;
+                  const dateLabel = r.run_date;
+                  const timeLabel = (() => {
+                    try { return new Date(r.completed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+                    catch { return ""; }
+                  })();
+                  return (
+                    <div
+                      key={r.job_id}
+                      className={`shrink-0 w-72 border rounded-lg p-3 space-y-2 transition
+                        ${isSelected ? "border-primary bg-primary/5" : "border-border bg-card"}`}
+                    >
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-medium">{dateLabel}</span>
+                        {timeLabel && <span className="text-muted-foreground">{timeLabel}</span>}
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 text-xs">
+                        <Badge variant="secondary">{r.final_count.toLocaleString()} skills</Badge>
+                        <Badge variant="outline" className="border-green-300 text-green-700">
+                          {r.new_count.toLocaleString()} new
+                        </Badge>
+                      </div>
+                      {r.sources && (
+                        <div className="text-[11px] text-muted-foreground truncate" title={r.sources}>
+                          {r.sources}
+                        </div>
+                      )}
+                      <Button
+                        size="sm"
+                        variant={isSelected && compareResult ? "outline" : "default"}
+                        className="w-full"
+                        onClick={() => runCompare(r)}
+                        disabled={compareLoading || merging}
+                      >
+                        {compareLoading && isSelected
+                          ? <><RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" />Comparing…</>
+                          : isSelected && compareResult
+                            ? <><RefreshCw className="w-3.5 h-3.5 mr-1.5" />Re-compare</>
+                            : <><RefreshCw className="w-3.5 h-3.5 mr-1.5" />Compare</>}
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
               {!compareResult && !compareLoading && (
-                <p className="text-sm text-muted-foreground">
-                  Compares scraped skills against the <strong>current living master</strong> — only truly new skills appear.
+                <p className="text-xs text-muted-foreground">
+                  Pick a run above to compare its skills against the gold taxonomy. Only genuine new skills will appear.
                 </p>
               )}
-              {compareResult && (
-                <div className="text-xs text-muted-foreground bg-muted/40 rounded px-3 py-1.5 flex items-center gap-1.5">
-                  <FileCheck className="w-3.5 h-3.5 shrink-0" />
-                  Compared against: <code>{compareResult.master_filename}</code>
-                </div>
-              )}
             </div>
+
+            {/* Run-scoped download buttons */}
+            {compareResult && selectedRun && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm text-muted-foreground">
+                  Run <code className="bg-muted/60 px-1.5 py-0.5 rounded text-xs">{selectedRun.run_date}</code>:
+                </span>
+                <Button variant="outline" size="sm" onClick={() => downloadNewSkills("xlsx")}>
+                  <Download className="w-4 h-4 mr-2" />New skills (XLSX)
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => downloadNewSkills("csv")}>
+                  <Download className="w-4 h-4 mr-2" />New skills (CSV)
+                </Button>
+              </div>
+            )}
 
             {compareError && (
               <div className="rounded-lg bg-destructive/10 text-destructive px-4 py-3 text-sm">{compareError}</div>

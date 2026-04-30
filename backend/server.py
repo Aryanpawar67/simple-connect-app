@@ -805,6 +805,24 @@ def _require_db() -> str:
 
 
 def _read_merge_history() -> list:
+    """Read taxonomy merge history from Neon (durable across redeploys).
+    Falls back to JSON file if DB is unreachable."""
+    db = _open_db(_DB_CONFIG)
+    if db is not None:
+        try:
+            rows = db.list_taxonomy_merges(limit=100)
+        finally:
+            db.close()
+        out = []
+        for r in rows:
+            md = r.get("merge_date")
+            out.append({
+                "date":        md.isoformat() if hasattr(md, "isoformat") else str(md),
+                "batch":       r.get("batch", ""),
+                "added_count": r.get("added_count", 0),
+                "skills":      r.get("skills") or [],
+            })
+        return out
     if not _TAXONOMY_HISTORY_FILE.exists():
         return []
     try:
@@ -814,9 +832,29 @@ def _read_merge_history() -> list:
 
 
 def _append_merge_history(entry: dict) -> None:
-    history = _read_merge_history()
-    history.insert(0, entry)
-    _TAXONOMY_HISTORY_FILE.write_text(json.dumps(history, indent=2))
+    """Persist a merge to Neon. JSON file is a best-effort mirror only."""
+    db = _open_db(_DB_CONFIG)
+    if db is not None:
+        try:
+            db.save_taxonomy_merge(
+                batch=entry.get("batch", ""),
+                merge_date=entry.get("date") or datetime.date.today(),
+                added_count=int(entry.get("added_count", 0)),
+                skills=entry.get("skills") or [],
+            )
+        finally:
+            db.close()
+    try:
+        history = []
+        if _TAXONOMY_HISTORY_FILE.exists():
+            try:
+                history = json.loads(_TAXONOMY_HISTORY_FILE.read_text())
+            except Exception:
+                history = []
+        history.insert(0, entry)
+        _TAXONOMY_HISTORY_FILE.write_text(json.dumps(history, indent=2))
+    except Exception:
+        pass
 
 
 class ApprovedSkill(BaseModel):
@@ -945,18 +983,53 @@ async def taxonomy_domains():
     return _tax_domains(_require_db())
 
 
-@app.get("/api/taxonomy/compare")
-async def taxonomy_compare(last_run_only: bool = Query(False)):
+@app.get("/api/taxonomy/runs")
+async def taxonomy_runs(limit: int = Query(10, ge=1, le=50)):
     db = _open_db(_DB_CONFIG)
     if db is None:
         raise HTTPException(status_code=503, detail="Could not connect to skills database.")
     try:
-        db_skills = db.latest_run_skills() if last_run_only else db.all_skills()
+        runs = db.list_runs(limit=limit)
+    finally:
+        db.close()
+    for r in runs:
+        if r.get("run_date") is not None:
+            r["run_date"] = r["run_date"].isoformat()
+        if r.get("completed_at") is not None:
+            r["completed_at"] = r["completed_at"].isoformat()
+    return runs
+
+
+def _resolve_run_skills(db, run_date: str | None, job_id: str | None) -> tuple[list, str]:
+    """Resolve a (run_date, job_id) pair to skills. Returns (skills, run_date_iso)."""
+    if not run_date and not job_id:
+        raise HTTPException(
+            status_code=400,
+            detail="run_date or job_id is required — bulk historical compare has been removed.",
+        )
+    if job_id and not run_date:
+        run = db.get_run_by_job_id(job_id)
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Unknown job_id: {job_id}")
+        run_date = run["run_date"].isoformat() if hasattr(run["run_date"], "isoformat") else str(run["run_date"])
+    return db.skills_by_run_date(run_date), run_date
+
+
+@app.get("/api/taxonomy/compare")
+async def taxonomy_compare(
+    run_date: str | None = Query(None),
+    job_id: str | None = Query(None),
+):
+    db = _open_db(_DB_CONFIG)
+    if db is None:
+        raise HTTPException(status_code=503, detail="Could not connect to skills database.")
+    try:
+        db_skills, resolved_date = _resolve_run_skills(db, run_date, job_id)
     finally:
         db.close()
     result = _tax_compare(_require_db(), db_skills)
     result["master_filename"] = "Neon DB"
-    result["scope"] = "latest_run" if last_run_only else "all"
+    result["scope"] = {"run_date": resolved_date, "job_id": job_id}
     return result
 
 
@@ -1034,20 +1107,14 @@ async def taxonomy_master_download():
 
 @app.get("/api/taxonomy/overview")
 async def taxonomy_overview():
-    db = _open_db(_DB_CONFIG)
-    if db is None:
-        raise HTTPException(status_code=503, detail="Could not connect to skills database.")
-    try:
-        db_skills = db.all_skills()
-    finally:
-        db.close()
-    return _tax_overview(_require_db(), db_skills)
+    return _tax_overview(_require_db())
 
 
 @app.get("/api/taxonomy/new-skills/download")
 async def taxonomy_new_skills_download(
     format: str = Query("csv", description="csv or xlsx"),
-    last_run_only: bool = Query(False),
+    run_date: str | None = Query(None),
+    job_id: str | None = Query(None),
 ):
     import io as _io
     import csv as csv_mod
@@ -1056,7 +1123,7 @@ async def taxonomy_new_skills_download(
     if db is None:
         raise HTTPException(status_code=503, detail="Could not connect to skills database.")
     try:
-        db_skills = db.latest_run_skills() if last_run_only else db.all_skills()
+        db_skills, _resolved_date = _resolve_run_skills(db, run_date, job_id)
     finally:
         db.close()
 

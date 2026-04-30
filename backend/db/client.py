@@ -103,6 +103,18 @@ CREATE TABLE IF NOT EXISTS changelog_runs (
 CREATE INDEX IF NOT EXISTS idx_changelog_runs_date ON changelog_runs(run_date DESC);
 """
 
+_TAXONOMY_MERGES_DDL = """
+CREATE TABLE IF NOT EXISTS taxonomy_merges (
+    id           SERIAL PRIMARY KEY,
+    batch        TEXT NOT NULL,
+    merge_date   DATE NOT NULL,
+    added_count  INT  NOT NULL DEFAULT 0,
+    skills       JSONB NOT NULL DEFAULT '[]',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_taxonomy_merges_date ON taxonomy_merges(merge_date DESC);
+"""
+
 
 def _normalize(name: str) -> str:
     """
@@ -137,6 +149,7 @@ class SkillsDB:
             cur.execute(_SCRAPE_RUNS_DDL)
             cur.execute(_REJECTED_DDL)
             cur.execute(_CHANGELOG_RUNS_DDL)
+            cur.execute(_TAXONOMY_MERGES_DDL)
         self._conn.commit()
         log.debug("DB schema ready.")
 
@@ -392,6 +405,33 @@ class SkillsDB:
             )
             return [dict(r) for r in cur.fetchall()]
 
+    def skills_by_run_date(self, run_date: str) -> list:
+        """Return skills whose last_seen equals run_date — i.e. all skills present
+        in the scrape run on that date. Mirrors the shape of all_skills() so it
+        can be passed straight into compare_with_skills()."""
+        with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, skill_name, normalized_name, category, subcategory, "
+                "skill_type, source, confidence_score, popularity, "
+                "taxonomy_merged_at, taxonomy_domain, taxonomy_subdomain "
+                "FROM skills "
+                "WHERE last_seen = %s::date "
+                "ORDER BY skill_name",
+                (run_date,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_run_by_job_id(self, job_id: str) -> dict | None:
+        """Look up a single scrape run by job_id."""
+        with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT job_id, run_date, final_count, new_count, sources, completed_at "
+                "FROM scrape_runs WHERE job_id = %s",
+                (job_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
     def upsert_rejected_skills(self, records: list, run_date, reason: str = "below_threshold") -> None:
         """Save below-threshold skills for later reclamation review."""
         if not records:
@@ -580,6 +620,27 @@ class SkillsDB:
             )
             row = cur.fetchone()
         return row[0] if row else []
+
+    def save_taxonomy_merge(self, batch: str, merge_date, added_count: int, skills: list) -> None:
+        """Persist a taxonomy merge run for the History tab."""
+        import json
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO taxonomy_merges (batch, merge_date, added_count, skills) "
+                "VALUES (%s, %s, %s, %s::jsonb)",
+                (batch, merge_date, added_count, json.dumps(skills)),
+            )
+        self._conn.commit()
+
+    def list_taxonomy_merges(self, limit: int = 50) -> list:
+        """Return recent taxonomy merges for the UI History tab."""
+        with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT batch, merge_date, added_count, skills, created_at "
+                "FROM taxonomy_merges ORDER BY created_at DESC LIMIT %s",
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]
 
     def merged_skills_summary(self) -> dict:
         """Return count of merged vs unmerged skills and per-date breakdown."""

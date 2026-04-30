@@ -322,40 +322,37 @@ def merge_skills(dsn: str, approved_skills: list[dict], batch: str) -> int:
     return bulk_insert(dsn, rows, batch=batch)
 
 
-def get_overview(dsn: str, scraped_skills: list[dict]) -> dict:
-    """Return all 4 pipeline numbers in one call."""
+def get_overview(dsn: str, scraped_skills: list[dict] | None = None) -> dict:
+    """Fast pipeline headline counts via a single SQL set-difference.
+
+    Lexical-only: counts scraped rows whose normalized_name is not exact-in-gold.
+    Does not run version-strip / fuzzy / Claude layers — `is_estimate=True`.
+    Precise per-run counts come from /api/taxonomy/compare on a specific run.
+    """
     conn = get_conn(dsn)
     with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM taxonomy")
-        taxonomy_size = cur.fetchone()[0]
-        cur.execute("SELECT normalized_name FROM taxonomy")
-        taxonomy_norms: set[str] = {r[0] for r in cur.fetchall()}
-    conn.close()
-    taxonomy_norms_list = list(taxonomy_norms)
-
-    def _is_new(name: str) -> bool:
-        norm = _normalize(name)
-        if not norm or norm in taxonomy_norms:
-            return False
-        stripped = _strip_version(norm)
-        if stripped and stripped != norm:
-            stripped = _ALIASES.get(stripped, stripped)
-            if stripped in taxonomy_norms:
-                return False
-        return not process.extractOne(
-            norm, taxonomy_norms_list,
-            scorer=fuzz.WRatio,
-            score_cutoff=_FUZZY_THRESHOLD,
+        cur.execute(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM taxonomy) AS taxonomy_size,
+              (SELECT COUNT(*) FROM skills)   AS scraped_count,
+              (SELECT COUNT(*) FROM skills s
+                 WHERE NOT EXISTS (
+                   SELECT 1 FROM taxonomy t
+                    WHERE t.normalized_name = s.normalized_name
+                 ))                           AS new_skills_count_lexical
+            """
         )
-
-    new_count = sum(1 for s in scraped_skills if _is_new(s.get("skill_name", "")))
+        taxonomy_size, scraped_count, new_count = cur.fetchone()
+    conn.close()
 
     return {
-        "taxonomy_size": taxonomy_size,
-        "scraped_count": len(scraped_skills),
-        "new_skills_count": new_count,
-        "master_filename": "Neon DB",
-        "is_original": False,
+        "taxonomy_size":     taxonomy_size,
+        "scraped_count":     scraped_count,
+        "new_skills_count":  new_count,
+        "is_estimate":       True,
+        "master_filename":   "Neon DB",
+        "is_original":       False,
     }
 
 
