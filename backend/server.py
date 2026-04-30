@@ -946,16 +946,17 @@ async def taxonomy_domains():
 
 
 @app.get("/api/taxonomy/compare")
-async def taxonomy_compare():
+async def taxonomy_compare(last_run_only: bool = Query(False)):
     db = _open_db(_DB_CONFIG)
     if db is None:
         raise HTTPException(status_code=503, detail="Could not connect to skills database.")
     try:
-        db_skills = db.all_skills()
+        db_skills = db.latest_run_skills() if last_run_only else db.all_skills()
     finally:
         db.close()
     result = _tax_compare(_require_db(), db_skills)
     result["master_filename"] = "Neon DB"
+    result["scope"] = "latest_run" if last_run_only else "all"
     return result
 
 
@@ -1044,7 +1045,10 @@ async def taxonomy_overview():
 
 
 @app.get("/api/taxonomy/new-skills/download")
-async def taxonomy_new_skills_download(format: str = Query("csv", description="csv or xlsx")):
+async def taxonomy_new_skills_download(
+    format: str = Query("csv", description="csv or xlsx"),
+    last_run_only: bool = Query(False),
+):
     import io as _io
     import csv as csv_mod
 
@@ -1052,7 +1056,7 @@ async def taxonomy_new_skills_download(format: str = Query("csv", description="c
     if db is None:
         raise HTTPException(status_code=503, detail="Could not connect to skills database.")
     try:
-        db_skills = db.all_skills()
+        db_skills = db.latest_run_skills() if last_run_only else db.all_skills()
     finally:
         db.close()
 

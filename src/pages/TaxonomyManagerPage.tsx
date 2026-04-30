@@ -137,6 +137,7 @@ const TaxonomyManagerPage = () => {
   const [page, setPage] = useState(0);
   const [skillFilter, setSkillFilter] = useState<"all" | "mapped" | "unmappable">("all");
   const [mergeConfidenceThreshold, setMergeConfidenceThreshold] = useState(0.6);
+  const [lastRunOnly, setLastRunOnly] = useState(true);
 
   // Merge
   const [merging, setMerging] = useState(false);
@@ -178,7 +179,8 @@ const TaxonomyManagerPage = () => {
   };
 
   const downloadNewSkills = (fmt: "csv" | "xlsx") => {
-    window.open(apiUrl(`/api/taxonomy/new-skills/download?format=${fmt}`), "_blank");
+    const scope = lastRunOnly ? "&last_run_only=true" : "";
+    window.open(apiUrl(`/api/taxonomy/new-skills/download?format=${fmt}${scope}`), "_blank");
   };
 
   const downloadFullTaxonomy = () => {
@@ -234,7 +236,7 @@ const TaxonomyManagerPage = () => {
     setPage(0);
     await loadDomainsIndex();
     try {
-      const res = await fetch(apiUrl("/api/taxonomy/compare"));
+      const res = await fetch(apiUrl(`/api/taxonomy/compare${lastRunOnly ? "?last_run_only=true" : ""}`));
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data: CompareResult = await res.json();
       setCompareResult(data);
@@ -521,6 +523,19 @@ const TaxonomyManagerPage = () => {
                     ? <><RefreshCw className="w-4 h-4 mr-2" />Re-compare</>
                     : <><RefreshCw className="w-4 h-4 mr-2" />Run Comparison</>}
               </Button>
+              <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                <Checkbox
+                  checked={lastRunOnly}
+                  onCheckedChange={(v) => setLastRunOnly(!!v)}
+                  disabled={compareLoading || merging}
+                />
+                <span>
+                  Latest scrape only
+                  <span className="text-muted-foreground ml-1">
+                    ({lastRunOnly ? "fast — current run's skills" : "all historical skills (slow)"})
+                  </span>
+                </span>
+              </label>
               {!compareResult && !compareLoading && (
                 <p className="text-sm text-muted-foreground">
                   Compares scraped skills against the <strong>current living master</strong> — only truly new skills appear.

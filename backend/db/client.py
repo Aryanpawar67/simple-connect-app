@@ -288,6 +288,19 @@ class SkillsDB:
             )
             return [dict(r) for r in cur.fetchall()]
 
+    def latest_run_skills(self) -> list[dict]:
+        """Return skills seen in the most recent scrape run only."""
+        with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, skill_name, normalized_name, category, subcategory, "
+                "skill_type, source, confidence_score, popularity, "
+                "taxonomy_merged_at, taxonomy_domain, taxonomy_subdomain "
+                "FROM skills "
+                "WHERE last_seen = (SELECT MAX(last_seen) FROM skills) "
+                "ORDER BY skill_name"
+            )
+            return [dict(r) for r in cur.fetchall()]
+
     def mark_taxonomy_merged(self, skill_names: list[str], domain: str, subdomain: str, merged_date) -> int:
         """
         Mark skills as merged into the taxonomy.
