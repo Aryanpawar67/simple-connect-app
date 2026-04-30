@@ -1007,6 +1007,45 @@ async def taxonomy_runs(limit: int = Query(10, ge=1, le=50)):
     return runs
 
 
+@app.delete("/api/taxonomy/runs/{job_id}")
+async def taxonomy_run_delete(job_id: str):
+    """Drop a scrape run and its only-in-this-run footprint. Gold taxonomy
+    entries already merged from this run are intentionally preserved."""
+    db = _open_db(_DB_CONFIG)
+    if db is None:
+        raise HTTPException(status_code=503, detail="Could not connect to skills database.")
+    try:
+        result = db.delete_run(job_id)
+    finally:
+        db.close()
+    if not result.get("found"):
+        raise HTTPException(status_code=404, detail=f"Unknown job_id: {job_id}")
+    return result
+
+
+@app.get("/api/taxonomy/runs/{job_id}/merged-skills")
+async def taxonomy_run_merged_skills(job_id: str):
+    """List skills already merged into gold from this run (read-only view)."""
+    db = _open_db(_DB_CONFIG)
+    if db is None:
+        raise HTTPException(status_code=503, detail="Could not connect to skills database.")
+    try:
+        run = db.get_run_by_job_id(job_id)
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Unknown job_id: {job_id}")
+        run_date = run["run_date"]
+        run_date_iso = run_date.isoformat() if hasattr(run_date, "isoformat") else str(run_date)
+        rows = db.merged_run_skills(run_date_iso)
+    finally:
+        db.close()
+    return {
+        "job_id": job_id,
+        "run_date": run_date_iso,
+        "count": len(rows),
+        "skills": rows,
+    }
+
+
 def _resolve_run_skills(db, run_date: str | None, job_id: str | None) -> tuple[list, str]:
     """Resolve a (run_date, job_id) pair to skills. Returns (skills, run_date_iso)."""
     if not run_date and not job_id:

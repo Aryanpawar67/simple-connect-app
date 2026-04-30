@@ -437,6 +437,55 @@ class SkillsDB:
             row = cur.fetchone()
             return dict(row) if row else None
 
+    def delete_run(self, job_id: str) -> dict:
+        """Delete a scrape run and its footprint:
+          - skills rows whose first_seen = last_seen = run_date (only-in-this-run)
+          - rejected_skills rows whose first_rejected_at = last_rejected_at = run_date
+          - taxonomy_merges rows tagged with this job_id
+          - the scrape_runs row itself
+
+        Skills that were also seen in earlier runs (first_seen < run_date) are kept;
+        gold taxonomy entries that were merged from this run are NOT touched
+        (they're committed master data). Returns deleted counts.
+        """
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT run_date FROM scrape_runs WHERE job_id = %s", (job_id,))
+            row = cur.fetchone()
+            if not row:
+                return {"found": False}
+            run_date = row[0]
+
+            cur.execute(
+                "DELETE FROM skills WHERE first_seen = %s AND last_seen = %s",
+                (run_date, run_date),
+            )
+            skills_deleted = cur.rowcount
+
+            try:
+                cur.execute(
+                    "DELETE FROM rejected_skills "
+                    "WHERE first_rejected_at = %s AND last_rejected_at = %s",
+                    (run_date, run_date),
+                )
+                rejected_deleted = cur.rowcount
+            except psycopg2.errors.UndefinedColumn:
+                rejected_deleted = 0
+
+            cur.execute("DELETE FROM taxonomy_merges WHERE job_id = %s", (job_id,))
+            merges_deleted = cur.rowcount
+
+            cur.execute("DELETE FROM scrape_runs WHERE job_id = %s", (job_id,))
+            run_deleted = cur.rowcount
+        self._conn.commit()
+        return {
+            "found": True,
+            "run_date": run_date.isoformat() if hasattr(run_date, "isoformat") else str(run_date),
+            "skills_deleted": skills_deleted,
+            "rejected_deleted": rejected_deleted,
+            "merges_deleted": merges_deleted,
+            "run_deleted": run_deleted,
+        }
+
     def upsert_rejected_skills(self, records: list, run_date, reason: str = "below_threshold") -> None:
         """Save below-threshold skills for later reclamation review."""
         if not records:

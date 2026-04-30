@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Download, RefreshCw, GitMerge, Database, Layers, FolderTree, BookOpen, ChevronDown, ChevronUp, History, FileCheck, ArrowRight } from "lucide-react";
+import { Download, RefreshCw, GitMerge, Database, Layers, FolderTree, BookOpen, ChevronDown, ChevronUp, History, FileCheck, ArrowRight, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -155,6 +155,10 @@ const TaxonomyManagerPage = () => {
   const [runsLoading, setRunsLoading] = useState(false);
   const [runsError, setRunsError] = useState("");
   const [selectedRun, setSelectedRun] = useState<ScrapeRun | null>(null);
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
+
+  // Merged-skills viewer for completed runs
+  const [mergedView, setMergedView] = useState<{ run: ScrapeRun; loading: boolean; skills: any[]; error: string } | null>(null);
 
   // Merge
   const [merging, setMerging] = useState(false);
@@ -207,6 +211,61 @@ const TaxonomyManagerPage = () => {
   const downloadMergedRun = (run: ScrapeRun, fmt: "csv" | "xlsx" = "xlsx") => {
     const url = `/api/taxonomy/new-skills/download?format=${fmt}&merged=true&run_date=${encodeURIComponent(run.run_date)}&job_id=${encodeURIComponent(run.job_id)}`;
     window.open(apiUrl(url), "_blank");
+  };
+
+  const viewMergedSkills = async (run: ScrapeRun) => {
+    setSelectedRun(run);
+    setMergedView({ run, loading: true, skills: [], error: "" });
+    try {
+      const res = await fetch(apiUrl(`/api/taxonomy/runs/${encodeURIComponent(run.job_id)}/merged-skills`));
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      const data = await res.json();
+      setMergedView({ run, loading: false, skills: data.skills || [], error: "" });
+    } catch (e: any) {
+      setMergedView({ run, loading: false, skills: [], error: e.message || "Failed to load merged skills" });
+    }
+  };
+
+  const deleteRun = async (run: ScrapeRun) => {
+    const ok = window.confirm(
+      `Delete run ${run.run_date} (${run.final_count.toLocaleString()} skills)?\n\n` +
+      `Removes:\n` +
+      `  • the run record\n` +
+      `  • skills only seen in this run\n` +
+      `  • merge-history entries for this run\n\n` +
+      `Keeps: gold taxonomy entries already merged from this run.\n\n` +
+      `This cannot be undone.`
+    );
+    if (!ok) return;
+    setDeletingRunId(run.job_id);
+    try {
+      const res = await fetch(apiUrl(`/api/taxonomy/runs/${encodeURIComponent(run.job_id)}`), { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Server error ${res.status}`);
+      }
+      const result = await res.json();
+      // Clear any view tied to this run
+      if (selectedRun?.job_id === run.job_id) {
+        setSelectedRun(null);
+        setCompareResult(null);
+        setEditedSkills([]);
+        setMergedView(null);
+      }
+      await loadRuns();
+      await loadHistory();
+      await loadOverview();
+      window.alert(
+        `Run deleted.\n\n` +
+        `Skills removed: ${result.skills_deleted}\n` +
+        `Rejected removed: ${result.rejected_deleted}\n` +
+        `Merge entries removed: ${result.merges_deleted}`
+      );
+    } catch (e: any) {
+      window.alert(`Delete failed: ${e.message || e}`);
+    } finally {
+      setDeletingRunId(null);
+    }
   };
 
   const loadRuns = async () => {
@@ -279,6 +338,7 @@ const TaxonomyManagerPage = () => {
     setCompareResult(null);
     setMergeResult(null);
     setMergeError("");
+    setMergedView(null);
     setPage(0);
     await loadDomainsIndex();
     try {
@@ -590,15 +650,38 @@ const TaxonomyManagerPage = () => {
                     (h) => (h.job_id && h.job_id === r.job_id) || (!h.job_id && h.run_date === r.run_date)
                   );
                   const isMerged = !!mergedEntry;
+                  const isDeleting = deletingRunId === r.job_id;
+                  const onCardActivate = () => {
+                    if (isDeleting) return;
+                    if (isMerged) viewMergedSkills(r);
+                    else runCompare(r);
+                  };
                   return (
                     <div
                       key={r.job_id}
-                      className={`shrink-0 w-72 border rounded-lg p-3 space-y-2 transition
-                        ${isMerged ? "border-green-300 bg-green-50/50"
+                      role="button"
+                      tabIndex={0}
+                      onClick={onCardActivate}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onCardActivate(); }
+                      }}
+                      className={`relative shrink-0 w-72 border rounded-lg p-3 space-y-2 transition cursor-pointer hover:shadow-sm
+                        ${isMerged ? "border-green-300 bg-green-50/50 hover:bg-green-50"
                           : isSelected ? "border-primary bg-primary/5"
-                          : "border-border bg-card"}`}
+                          : "border-border bg-card hover:border-muted-foreground/40"}
+                        ${isDeleting ? "opacity-50 pointer-events-none" : ""}`}
                     >
-                      <div className="flex items-center justify-between text-xs">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); deleteRun(r); }}
+                        disabled={isDeleting}
+                        title="Delete this run"
+                        aria-label="Delete this run"
+                        className="absolute top-2 right-2 p-1 rounded text-muted-foreground hover:text-red-600 hover:bg-red-50"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                      <div className="flex items-center justify-between text-xs pr-6">
                         <span className="font-medium">{dateLabel}</span>
                         {timeLabel && <span className="text-muted-foreground">{timeLabel}</span>}
                       </div>
@@ -621,21 +704,11 @@ const TaxonomyManagerPage = () => {
                         </div>
                       )}
                       {isMerged ? (
-                        <div className="flex gap-1.5">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="flex-1"
-                            onClick={() => downloadMergedRun(r, "xlsx")}
-                          >
+                        <div className="flex gap-1.5" onClick={(e) => e.stopPropagation()}>
+                          <Button size="sm" variant="outline" className="flex-1" onClick={() => downloadMergedRun(r, "xlsx")}>
                             <Download className="w-3.5 h-3.5 mr-1.5" />XLSX
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="flex-1"
-                            onClick={() => downloadMergedRun(r, "csv")}
-                          >
+                          <Button size="sm" variant="outline" className="flex-1" onClick={() => downloadMergedRun(r, "csv")}>
                             <Download className="w-3.5 h-3.5 mr-1.5" />CSV
                           </Button>
                         </div>
@@ -644,7 +717,7 @@ const TaxonomyManagerPage = () => {
                           size="sm"
                           variant={isSelected && compareResult ? "outline" : "default"}
                           className="w-full"
-                          onClick={() => runCompare(r)}
+                          onClick={(e) => { e.stopPropagation(); runCompare(r); }}
                           disabled={compareLoading || merging}
                         >
                           {compareLoading && isSelected
@@ -658,12 +731,69 @@ const TaxonomyManagerPage = () => {
                   );
                 })}
               </div>
-              {!compareResult && !compareLoading && (
+              {!compareResult && !compareLoading && !mergedView && (
                 <p className="text-xs text-muted-foreground">
-                  Pick a run above to compare its skills against the gold taxonomy. Only genuine new skills will appear.
+                  Click a run card to view its skills. Unmerged runs run a fresh compare; merged runs show what landed in gold.
                 </p>
               )}
             </div>
+
+            {/* Merged-run skills viewer (read-only) */}
+            {mergedView && (
+              <Card className="border-green-200">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <FileCheck className="w-4 h-4 text-green-600" />
+                      Merged skills · run {mergedView.run.run_date}
+                      {!mergedView.loading && <Badge variant="secondary">{mergedView.skills.length}</Badge>}
+                    </CardTitle>
+                    <div className="flex items-center gap-2">
+                      <Button size="sm" variant="outline" onClick={() => downloadMergedRun(mergedView.run, "xlsx")}>
+                        <Download className="w-3.5 h-3.5 mr-1.5" />XLSX
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => downloadMergedRun(mergedView.run, "csv")}>
+                        <Download className="w-3.5 h-3.5 mr-1.5" />CSV
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setMergedView(null)} aria-label="Close">
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {mergedView.loading && <div className="text-sm text-muted-foreground">Loading…</div>}
+                  {mergedView.error && <div className="text-sm text-red-600">{mergedView.error}</div>}
+                  {!mergedView.loading && !mergedView.error && mergedView.skills.length === 0 && (
+                    <div className="text-sm text-muted-foreground">No merged skills found for this run.</div>
+                  )}
+                  {!mergedView.loading && mergedView.skills.length > 0 && (
+                    <div className="max-h-[420px] overflow-y-auto border rounded">
+                      <Table>
+                        <TableHeader className="sticky top-0 bg-background z-10">
+                          <TableRow>
+                            <TableHead>Skill Name</TableHead>
+                            <TableHead>Domain</TableHead>
+                            <TableHead>Subdomain</TableHead>
+                            <TableHead>Source</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {mergedView.skills.map((s, i) => (
+                            <TableRow key={i}>
+                              <TableCell className="font-medium">{s.skill_name}</TableCell>
+                              <TableCell className="text-xs">{s.taxonomy_domain || "—"}</TableCell>
+                              <TableCell className="text-xs">{s.taxonomy_subdomain || "—"}</TableCell>
+                              <TableCell className="text-xs text-muted-foreground">{s.source || "—"}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
 
             {/* Run-scoped download buttons */}
             {compareResult && selectedRun && (
