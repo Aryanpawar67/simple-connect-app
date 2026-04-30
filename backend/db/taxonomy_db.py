@@ -38,7 +38,9 @@ CREATE INDEX IF NOT EXISTS idx_taxonomy_sheet      ON taxonomy (sheet);
 _PAREN_SUFFIX = re.compile(r"\s*[\(\[\{].*?[\)\]\}]")
 _VERSION_TAIL = re.compile(r"[\s\-_]*v?\d+(\.\d+)*\s*$")
 _WS = re.compile(r"\s+")
-_FUZZY_THRESHOLD = 92
+_FUZZY_THRESHOLD = 92         # auto-accept above this
+_AI_GREYZONE_LOW = 78         # ask Claude about candidates with score in [low, FUZZY_THRESHOLD)
+_AI_GREYZONE_LIMIT = 5        # max candidates per scraped name shown to Claude
 
 
 def _aliases() -> dict:
@@ -218,8 +220,28 @@ def compare_with_skills(dsn: str, db_skills: list[dict]) -> dict:
     conn.close()
     taxonomy_norms_list = list(taxonomy_norms)
 
+    def _build_entry(skill: dict, name: str) -> dict:
+        category    = skill.get("category") or ""
+        subcategory = skill.get("subcategory") or ""
+        skill_type  = skill.get("skill_type") or ""
+        return {
+            "db_id":                   skill.get("id"),
+            "skill_name":              name,
+            "proposed_domain":         CATEGORY_TO_DOMAIN.get(category, DEFAULT_DOMAIN if category else ""),
+            "proposed_subdomain":      SUBCATEGORY_TO_SUBDOMAIN.get(subcategory, DEFAULT_SUBDOMAIN if subcategory else ""),
+            "proposed_cluster":        SUBCATEGORY_TO_SUBDOMAIN.get(subcategory, DEFAULT_SUBDOMAIN if subcategory else ""),
+            "proposed_classification": SKILLTYPE_TO_CLASSIFICATION.get(skill_type, DEFAULT_CLASSIFICATION),
+            "proposed_criticality":    DEFAULT_CRITICALITY,
+            "source":                  skill.get("source") or "",
+            "confidence_score":        skill.get("confidence_score") or 0.0,
+            "category":                category,
+            "subcategory":             subcategory,
+            "skill_type":              skill_type,
+        }
+
     new_skills, unmappable = [], []
     matched = 0
+    borderline: list[tuple[str, list[str], dict]] = []  # (norm, candidates, entry)
 
     for skill in db_skills:
         name = skill.get("skill_name") or ""
@@ -240,34 +262,40 @@ def compare_with_skills(dsn: str, db_skills: list[dict]) -> dict:
                 matched += 1
                 continue
 
-        # Layer 3: fuzzy token-sort fallback against the full taxonomy.
-        if process.extractOne(
+        # Layer 3: fuzzy WRatio fallback against the full taxonomy.
+        # WRatio handles punctuation/whitespace variation better than token_sort
+        # (e.g. "node js" vs "node.js" scores 86 vs 57).
+        ranked = process.extract(
             norm, taxonomy_norms_list,
-            scorer=fuzz.token_sort_ratio,
-            score_cutoff=_FUZZY_THRESHOLD,
-        ):
+            scorer=fuzz.WRatio,
+            score_cutoff=_AI_GREYZONE_LOW,
+            limit=_AI_GREYZONE_LIMIT,
+        )
+        if ranked and ranked[0][1] >= _FUZZY_THRESHOLD:
             matched += 1
             continue
 
-        category    = skill.get("category") or ""
-        subcategory = skill.get("subcategory") or ""
-        skill_type  = skill.get("skill_type") or ""
+        entry = _build_entry(skill, name)
 
-        entry = {
-            "db_id":                   skill.get("id"),
-            "skill_name":              name,
-            "proposed_domain":         CATEGORY_TO_DOMAIN.get(category, DEFAULT_DOMAIN if category else ""),
-            "proposed_subdomain":      SUBCATEGORY_TO_SUBDOMAIN.get(subcategory, DEFAULT_SUBDOMAIN if subcategory else ""),
-            "proposed_cluster":        SUBCATEGORY_TO_SUBDOMAIN.get(subcategory, DEFAULT_SUBDOMAIN if subcategory else ""),
-            "proposed_classification": SKILLTYPE_TO_CLASSIFICATION.get(skill_type, DEFAULT_CLASSIFICATION),
-            "proposed_criticality":    DEFAULT_CRITICALITY,
-            "source":                  skill.get("source") or "",
-            "confidence_score":        skill.get("confidence_score") or 0.0,
-            "category":                category,
-            "subcategory":             subcategory,
-            "skill_type":              skill_type,
-        }
-        (unmappable if not category else new_skills).append(entry)
+        # Layer 4: defer borderline candidates (78–91) for Claude to resolve.
+        greyzone = [c[0] for c in ranked if c[1] < _FUZZY_THRESHOLD]
+        if greyzone:
+            borderline.append((norm, greyzone, entry))
+        else:
+            (unmappable if not entry["category"] else new_skills).append(entry)
+
+    # Layer 4 (cont.): batch-ask Claude about the borderline cases.
+    if borderline:
+        try:
+            from ai.taxonomy_matcher import ai_resolve_taxonomy_matches
+            confirmed = ai_resolve_taxonomy_matches([(n, c) for n, c, _ in borderline])
+        except Exception:
+            confirmed = {}
+        for norm, _cands, entry in borderline:
+            if norm in confirmed:
+                matched += 1
+            else:
+                (unmappable if not entry["category"] else new_skills).append(entry)
 
     return {
         "total_db_skills": len(db_skills),
@@ -316,7 +344,7 @@ def get_overview(dsn: str, scraped_skills: list[dict]) -> dict:
                 return False
         return not process.extractOne(
             norm, taxonomy_norms_list,
-            scorer=fuzz.token_sort_ratio,
+            scorer=fuzz.WRatio,
             score_cutoff=_FUZZY_THRESHOLD,
         )
 
