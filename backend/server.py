@@ -816,11 +816,14 @@ def _read_merge_history() -> list:
         out = []
         for r in rows:
             md = r.get("merge_date")
+            rd = r.get("run_date")
             out.append({
                 "date":        md.isoformat() if hasattr(md, "isoformat") else str(md),
                 "batch":       r.get("batch", ""),
                 "added_count": r.get("added_count", 0),
                 "skills":      r.get("skills") or [],
+                "job_id":      r.get("job_id"),
+                "run_date":    rd.isoformat() if hasattr(rd, "isoformat") else (str(rd) if rd else None),
             })
         return out
     if not _TAXONOMY_HISTORY_FILE.exists():
@@ -841,6 +844,8 @@ def _append_merge_history(entry: dict) -> None:
                 merge_date=entry.get("date") or datetime.date.today(),
                 added_count=int(entry.get("added_count", 0)),
                 skills=entry.get("skills") or [],
+                job_id=entry.get("job_id"),
+                run_date=entry.get("run_date"),
             )
         finally:
             db.close()
@@ -868,6 +873,8 @@ class ApprovedSkill(BaseModel):
 
 class MergeRequest(BaseModel):
     approved_skills: list[ApprovedSkill]
+    job_id: str | None = None
+    run_date: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1072,8 +1079,16 @@ async def taxonomy_merge(body: MergeRequest):
         "added_count": added,
         "batch": batch,
         "skills": [s["skill_name"] for s in approved],
+        "job_id": body.job_id,
+        "run_date": body.run_date,
     })
-    return {"added_count": added, "new_master": "Neon DB", "batch": batch}
+    return {
+        "added_count": added,
+        "new_master": "Neon DB",
+        "batch": batch,
+        "job_id": body.job_id,
+        "run_date": body.run_date,
+    }
 
 
 @app.get("/api/taxonomy/merged-stats")
@@ -1115,20 +1130,50 @@ async def taxonomy_new_skills_download(
     format: str = Query("csv", description="csv or xlsx"),
     run_date: str | None = Query(None),
     job_id: str | None = Query(None),
+    merged: bool = Query(False, description="If true, return skills already merged into gold from this run instead of running compare."),
 ):
     import io as _io
     import csv as csv_mod
+    import openpyxl
+    from taxonomy.domain_mapping import (
+        SKILLTYPE_TO_CLASSIFICATION, DEFAULT_CLASSIFICATION, DEFAULT_CRITICALITY,
+    )
 
     db = _open_db(_DB_CONFIG)
     if db is None:
         raise HTTPException(status_code=503, detail="Could not connect to skills database.")
     try:
-        db_skills, _resolved_date = _resolve_run_skills(db, run_date, job_id)
+        if merged:
+            if not run_date and not job_id:
+                raise HTTPException(status_code=400, detail="run_date or job_id is required.")
+            if job_id and not run_date:
+                run = db.get_run_by_job_id(job_id)
+                if not run:
+                    raise HTTPException(status_code=404, detail=f"Unknown job_id: {job_id}")
+                run_date = run["run_date"].isoformat() if hasattr(run["run_date"], "isoformat") else str(run["run_date"])
+            rows = db.merged_run_skills(run_date)
+            new_skills = [
+                {
+                    "skill_name":              r["skill_name"],
+                    "proposed_domain":         r.get("taxonomy_domain") or "",
+                    "proposed_subdomain":      r.get("taxonomy_subdomain") or "",
+                    "proposed_cluster":        r.get("taxonomy_subdomain") or "",
+                    "proposed_classification": SKILLTYPE_TO_CLASSIFICATION.get(r.get("skill_type") or "", DEFAULT_CLASSIFICATION),
+                    "proposed_criticality":    DEFAULT_CRITICALITY,
+                    "confidence_score":        r.get("confidence_score") or 0.0,
+                    "source":                  r.get("source") or "",
+                    "category":                r.get("category") or "",
+                    "subcategory":             r.get("subcategory") or "",
+                    "skill_type":              r.get("skill_type") or "",
+                }
+                for r in rows
+            ]
+        else:
+            db_skills, _resolved_date = _resolve_run_skills(db, run_date, job_id)
+            result = _tax_compare(_require_db(), db_skills)
+            new_skills = result["new_skills"] + result["unmappable"]
     finally:
         db.close()
-
-    result = _tax_compare(_require_db(), db_skills)
-    new_skills = result["new_skills"] + result["unmappable"]
 
     if not new_skills:
         raise HTTPException(status_code=404, detail="No new skills found.")

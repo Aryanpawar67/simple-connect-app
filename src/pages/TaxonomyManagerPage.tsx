@@ -96,6 +96,8 @@ interface MergeHistoryEntry {
   skills: string[];
   file_exists: boolean;
   file_size: string;
+  job_id?: string | null;
+  run_date?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +178,10 @@ const TaxonomyManagerPage = () => {
   useEffect(() => {
     if (activeTab === "stats") loadStats();
     if (activeTab === "history") loadHistory();
-    if (activeTab === "merge") loadRuns();
+    if (activeTab === "merge") {
+      loadRuns();
+      loadHistory();
+    }
   }, [activeTab]);
 
   const loadOverview = async () => {
@@ -196,6 +201,11 @@ const TaxonomyManagerPage = () => {
   const downloadNewSkills = (fmt: "csv" | "xlsx") => {
     if (!selectedRun) return;
     const url = `/api/taxonomy/new-skills/download?format=${fmt}&run_date=${encodeURIComponent(selectedRun.run_date)}&job_id=${encodeURIComponent(selectedRun.job_id)}`;
+    window.open(apiUrl(url), "_blank");
+  };
+
+  const downloadMergedRun = (run: ScrapeRun, fmt: "csv" | "xlsx" = "xlsx") => {
+    const url = `/api/taxonomy/new-skills/download?format=${fmt}&merged=true&run_date=${encodeURIComponent(run.run_date)}&job_id=${encodeURIComponent(run.job_id)}`;
     window.open(apiUrl(url), "_blank");
   };
 
@@ -328,7 +338,11 @@ const TaxonomyManagerPage = () => {
       const res = await fetch(apiUrl("/api/taxonomy/merge"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ approved_skills: approved }),
+        body: JSON.stringify({
+          approved_skills: approved,
+          job_id: selectedRun?.job_id,
+          run_date: selectedRun?.run_date,
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -336,9 +350,10 @@ const TaxonomyManagerPage = () => {
       }
       const result = await res.json();
       setMergeResult(result);
-      // Refresh stats to reflect new master size
+      // Refresh stats + history so the run card flips to "Merged"
       setStats(null);
       loadStats();
+      loadHistory();
     } catch (e: any) {
       setMergeError(e.message || "Merge failed");
     } finally {
@@ -571,11 +586,17 @@ const TaxonomyManagerPage = () => {
                     try { return new Date(r.completed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
                     catch { return ""; }
                   })();
+                  const mergedEntry = history.find(
+                    (h) => (h.job_id && h.job_id === r.job_id) || (!h.job_id && h.run_date === r.run_date)
+                  );
+                  const isMerged = !!mergedEntry;
                   return (
                     <div
                       key={r.job_id}
                       className={`shrink-0 w-72 border rounded-lg p-3 space-y-2 transition
-                        ${isSelected ? "border-primary bg-primary/5" : "border-border bg-card"}`}
+                        ${isMerged ? "border-green-300 bg-green-50/50"
+                          : isSelected ? "border-primary bg-primary/5"
+                          : "border-border bg-card"}`}
                     >
                       <div className="flex items-center justify-between text-xs">
                         <span className="font-medium">{dateLabel}</span>
@@ -583,28 +604,56 @@ const TaxonomyManagerPage = () => {
                       </div>
                       <div className="flex flex-wrap gap-1.5 text-xs">
                         <Badge variant="secondary">{r.final_count.toLocaleString()} skills</Badge>
-                        <Badge variant="outline" className="border-green-300 text-green-700">
-                          {r.new_count.toLocaleString()} new
-                        </Badge>
+                        {isMerged ? (
+                          <Badge className="bg-green-600 hover:bg-green-600">
+                            <FileCheck className="w-3 h-3 mr-1" />
+                            Merged · {mergedEntry!.added_count.toLocaleString()}
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="border-green-300 text-green-700">
+                            {r.new_count.toLocaleString()} new
+                          </Badge>
+                        )}
                       </div>
                       {r.sources && (
                         <div className="text-[11px] text-muted-foreground truncate" title={r.sources}>
                           {r.sources}
                         </div>
                       )}
-                      <Button
-                        size="sm"
-                        variant={isSelected && compareResult ? "outline" : "default"}
-                        className="w-full"
-                        onClick={() => runCompare(r)}
-                        disabled={compareLoading || merging}
-                      >
-                        {compareLoading && isSelected
-                          ? <><RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" />Comparing…</>
-                          : isSelected && compareResult
-                            ? <><RefreshCw className="w-3.5 h-3.5 mr-1.5" />Re-compare</>
-                            : <><RefreshCw className="w-3.5 h-3.5 mr-1.5" />Compare</>}
-                      </Button>
+                      {isMerged ? (
+                        <div className="flex gap-1.5">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1"
+                            onClick={() => downloadMergedRun(r, "xlsx")}
+                          >
+                            <Download className="w-3.5 h-3.5 mr-1.5" />XLSX
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1"
+                            onClick={() => downloadMergedRun(r, "csv")}
+                          >
+                            <Download className="w-3.5 h-3.5 mr-1.5" />CSV
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant={isSelected && compareResult ? "outline" : "default"}
+                          className="w-full"
+                          onClick={() => runCompare(r)}
+                          disabled={compareLoading || merging}
+                        >
+                          {compareLoading && isSelected
+                            ? <><RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" />Comparing…</>
+                            : isSelected && compareResult
+                              ? <><RefreshCw className="w-3.5 h-3.5 mr-1.5" />Re-compare</>
+                              : <><RefreshCw className="w-3.5 h-3.5 mr-1.5" />Compare</>}
+                        </Button>
+                      )}
                     </div>
                   );
                 })}
@@ -1037,14 +1086,6 @@ const TaxonomyManagerPage = () => {
 
           {/* Download buttons */}
           <div className="flex items-center gap-2 flex-wrap">
-            <Button variant="outline" size="sm" onClick={() => downloadNewSkills("csv")}
-              disabled={overview.new_skills_count === 0}>
-              <Download className="w-3.5 h-3.5 mr-1.5" />New Skills (CSV)
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => downloadNewSkills("xlsx")}
-              disabled={overview.new_skills_count === 0}>
-              <Download className="w-3.5 h-3.5 mr-1.5" />New Skills (XLSX)
-            </Button>
             <Button variant="outline" size="sm" onClick={downloadFullTaxonomy}>
               <Download className="w-3.5 h-3.5 mr-1.5" />Full Taxonomy
             </Button>

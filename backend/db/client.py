@@ -110,9 +110,14 @@ CREATE TABLE IF NOT EXISTS taxonomy_merges (
     merge_date   DATE NOT NULL,
     added_count  INT  NOT NULL DEFAULT 0,
     skills       JSONB NOT NULL DEFAULT '[]',
+    job_id       TEXT,
+    run_date     DATE,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_taxonomy_merges_date ON taxonomy_merges(merge_date DESC);
+ALTER TABLE taxonomy_merges ADD COLUMN IF NOT EXISTS job_id   TEXT;
+ALTER TABLE taxonomy_merges ADD COLUMN IF NOT EXISTS run_date DATE;
+CREATE INDEX IF NOT EXISTS idx_taxonomy_merges_job ON taxonomy_merges(job_id);
 """
 
 
@@ -621,14 +626,22 @@ class SkillsDB:
             row = cur.fetchone()
         return row[0] if row else []
 
-    def save_taxonomy_merge(self, batch: str, merge_date, added_count: int, skills: list) -> None:
+    def save_taxonomy_merge(
+        self,
+        batch: str,
+        merge_date,
+        added_count: int,
+        skills: list,
+        job_id: str | None = None,
+        run_date=None,
+    ) -> None:
         """Persist a taxonomy merge run for the History tab."""
         import json
         with self._conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO taxonomy_merges (batch, merge_date, added_count, skills) "
-                "VALUES (%s, %s, %s, %s::jsonb)",
-                (batch, merge_date, added_count, json.dumps(skills)),
+                "INSERT INTO taxonomy_merges (batch, merge_date, added_count, skills, job_id, run_date) "
+                "VALUES (%s, %s, %s, %s::jsonb, %s, %s)",
+                (batch, merge_date, added_count, json.dumps(skills), job_id, run_date),
             )
         self._conn.commit()
 
@@ -636,9 +649,23 @@ class SkillsDB:
         """Return recent taxonomy merges for the UI History tab."""
         with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT batch, merge_date, added_count, skills, created_at "
+                "SELECT batch, merge_date, added_count, skills, job_id, run_date, created_at "
                 "FROM taxonomy_merges ORDER BY created_at DESC LIMIT %s",
                 (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def merged_run_skills(self, run_date: str) -> list:
+        """Skills already merged into gold whose last_seen = run_date.
+        Used to regenerate the per-run merged xlsx after a merge has happened."""
+        with self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT skill_name, taxonomy_domain, taxonomy_subdomain, "
+                "category, subcategory, skill_type, source, confidence_score "
+                "FROM skills "
+                "WHERE last_seen = %s::date AND taxonomy_merged_at IS NOT NULL "
+                "ORDER BY skill_name",
+                (run_date,),
             )
             return [dict(r) for r in cur.fetchall()]
 
