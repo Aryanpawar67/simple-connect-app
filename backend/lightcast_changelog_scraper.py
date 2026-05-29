@@ -395,12 +395,19 @@ class LightcastChangelogScraper:
                 current_tab = None
                 continue
 
-            # ── Tab opening: <div data-tab="Renames (7)"> ─────────────────────
-            if 'data-tab=' in s:
-                m = re.search(r'data-tab=["\']([^"\']+)["\']', s)
+            # ── Tab opening: <div data-tab="Renames (7)"> or <div data-toggle="All 304 Additions"> ─
+            if 'data-tab=' in s or 'data-toggle=' in s:
+                m = re.search(r'data-(?:tab|toggle)=["\']([^"\']+)["\']', s)
                 if m:
-                    # Strip trailing count "(N)" to get a clean label
-                    current_tab = re.sub(r'\s*\(\d+\)\s*$', '', m.group(1)).strip()
+                    label = m.group(1)
+                    # Strip trailing count "(N)" — e.g. "Renames (7)" → "Renames"
+                    label = re.sub(r'\s*\(\d+\)\s*$', '', label).strip()
+                    # Strip leading "All N " — e.g. "All 304 Additions" → "Additions"
+                    label = re.sub(r'^All\s+\d+\s+', '', label).strip()
+                    # Normalize plural nouns to match other tab labels
+                    label = re.sub(r'^Additions$', 'Added', label, flags=re.IGNORECASE)
+                    label = re.sub(r'^Removals$', 'Removed', label, flags=re.IGNORECASE)
+                    current_tab = label
                 continue
 
             # ── Closing div: reset tab so items between tabs are ignored ───────
