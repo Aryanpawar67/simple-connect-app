@@ -236,8 +236,12 @@ def _run_scraper(
         matched_records = len(scraper.df)
         type_counts = scraper.df["Change_Type"].value_counts().to_dict()
 
-        # Step 4 — Export
-        q.put(("step", json.dumps({"step": 4, "message": "Exporting to Excel…"})))
+        # Step 4 — Enrich descriptions (Added + Renamed only, Haiku, 25% batches)
+        q.put(("step", json.dumps({"step": 4, "message": "Enriching descriptions…"})))
+        scraper.enrich_descriptions(batch_pct=0.25)
+
+        # Step 5 — Export
+        q.put(("step", json.dumps({"step": 5, "message": "Exporting to Excel…"})))
 
         if not scraper.export_to_excel(output_path):
             q.put(("scrape-error", json.dumps({"message": "Failed to write the Excel file."})))

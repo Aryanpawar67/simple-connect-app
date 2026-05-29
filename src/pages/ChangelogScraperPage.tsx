@@ -71,6 +71,7 @@ const PROGRESS_STEPS = [
   "Fetching changelog page…",
   "Parsing sections…",
   "Applying date filter…",
+  "Enriching descriptions…",
   "Exporting to Excel…",
 ];
 
