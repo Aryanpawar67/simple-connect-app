@@ -203,12 +203,13 @@ const ChangelogScraperPage = () => {
 
   const handleDownload = () => {
     if (!jobId) return;
-    const a = document.createElement("a");
-    a.href = apiUrl(`/api/changelog/download/${jobId}`);
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    // Open the download URL directly. The server responds with
+    // Content-Disposition: attachment, so the browser downloads the file
+    // (with the correct filename) without navigating away. A programmatic
+    // <a download> click does NOT work here because the backend is a
+    // different origin than the frontend, and the `download` attribute is
+    // ignored for cross-origin URLs — the download silently fails.
+    window.open(apiUrl(`/api/changelog/download/${jobId}`), "_blank");
   };
 
   return (
@@ -482,12 +483,13 @@ const ChangelogScraperPage = () => {
                         size="sm"
                         className="h-8 w-8 p-0"
                         onClick={() => {
-                          const a = document.createElement("a");
-                          a.href = apiUrl(`/api/changelog/history/${encodeURIComponent(run.filename)}/download`);
-                          a.download = run.filename;
-                          document.body.appendChild(a);
-                          a.click();
-                          document.body.removeChild(a);
+                          // Cross-origin backend: open directly so the server's
+                          // attachment header drives the download. A cross-origin
+                          // <a download> click is ignored by the browser.
+                          window.open(
+                            apiUrl(`/api/changelog/history/${encodeURIComponent(run.filename)}/download`),
+                            "_blank"
+                          );
                         }}
                       >
                         <Download className="w-4 h-4" />
