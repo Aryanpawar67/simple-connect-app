@@ -188,6 +188,7 @@ def _run_scraper(
     output_path: str,
     filename: str,
     q: queue.Queue,
+    description_types: Optional[List[str]] = None,
 ):
     """
     Runs the synchronous Playwright scraper in a background thread.
@@ -236,9 +237,9 @@ def _run_scraper(
         matched_records = len(scraper.df)
         type_counts = scraper.df["Change_Type"].value_counts().to_dict()
 
-        # Step 4 — Enrich descriptions (Added + Renamed only, Haiku, 25% batches)
+        # Step 4 — Enrich descriptions via Haiku for selected change types
         q.put(("step", json.dumps({"step": 4, "message": "Enriching descriptions…"})))
-        scraper.enrich_descriptions(batch_pct=0.25)
+        scraper.enrich_descriptions(batch_pct=0.25, description_types=description_types)
 
         # Step 5 — Export
         q.put(("step", json.dumps({"step": 5, "message": "Exporting to Excel…"})))
@@ -287,6 +288,7 @@ async def changelog_stream(
     months: Optional[str] = Query(None, description="Comma-separated YYYY-MM (specific mode)"),
     start: Optional[str] = Query(None, description="Start YYYY-MM (range mode)"),
     end: Optional[str] = Query(None, description="End YYYY-MM (range mode)"),
+    description_types: Optional[str] = Query(None, description="Comma-separated Change_Type values to enrich; omit for all, empty string for none"),
 ):
     """
     Server-Sent Events endpoint.  Stream scrape progress to the browser,
@@ -305,10 +307,15 @@ async def changelog_stream(
     elif mode == "range" and start and end:
         date_filter = expand_date_range(start, end)
 
+    # Resolve description_types: None = all, [] = none, list = selected subset
+    desc_types: Optional[List[str]] = None
+    if description_types is not None:
+        desc_types = [t.strip() for t in description_types.split(",") if t.strip()] if description_types.strip() else []
+
     # Start scraper in background thread (Playwright is sync)
     thread = threading.Thread(
         target=_run_scraper,
-        args=(job_id, date_filter, output_path, filename, msg_queue),
+        args=(job_id, date_filter, output_path, filename, msg_queue, desc_types),
         daemon=True,
     )
     thread.start()

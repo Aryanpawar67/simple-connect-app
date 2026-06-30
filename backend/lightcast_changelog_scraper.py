@@ -177,9 +177,9 @@ class LightcastChangelogScraper:
         Returns:
             Tuple of (original_name, new_name, notes)
         """
-        # Common rename patterns: "Old → New", "Old -> New", "Old renamed to New"
+        # Common rename patterns: "Old -> New", "Old -> New", "Old renamed to New"
         arrow_patterns = [
-            r'(.+?)\s*→\s*(.+)',
+            r'(.+?)\s*->\s*(.+)',
             r'(.+?)\s*->\s*(.+)',
             r'(.+?)\s+renamed\s+to\s+(.+)',
             r'(.+?)\s+changed\s+to\s+(.+)',
@@ -345,18 +345,53 @@ class LightcastChangelogScraper:
         print(f"  ✓ Extracted {len(entries)} entries")
         return entries
 
+    # ── Canonical mapping: raw tab label (lower-cased) -> Change_Type value ──────
+    # Covers every tab label observed on the Lightcast changelog page.
+    # "Internal Only" sections are skipped before this table is consulted.
+    _TAB_TO_CHANGE_TYPE: Dict[str, str] = {
+        'renames':            'Renamed',
+        'consolidations':     'Consolidated',
+        'removals':           'Removed',
+        'additions':          'Added',
+        'type changes':       'Type Changes',
+        'tagging changes':    'Tagging Changes',
+        'flag changes':       'Flag Changes',
+        'subcategory changes':'Taxonomy Change',
+        'category changes':   'Taxonomy Change',
+    }
+
+    # When a tab label isn't in _TAB_TO_CHANGE_TYPE, fall back to inferring
+    # the change type from the ### category heading (only for unambiguous sections).
+    # Older entries use data-toggle="All N Changes" under ### Removed, for example.
+    _CATEGORY_FALLBACK: Dict[str, str] = {
+        'added':            'Added',
+        'removed':          'Removed',
+        'flags':            'Flag Changes',
+        'taxonomy changes': 'Taxonomy Change',
+    }
+
+    # Sections whose content must never appear in the exported data.
+    _SKIP_CATEGORIES = {'internal only'}
+
     def scrape_all_sections(self) -> bool:
         """
         Scrape all changelog sections from the page.
 
         The API returns Markdown with embedded HTML blocks:
-          ## 9.42 (April 01, 2026)        ← version header
-          ### Changed                       ← category (resets current tab)
-          <div data-tab="Renames (7)">     ← tab label
-          * Renamed `"X" (ID)` to `Y`     ← skill entry
-          </div>                            ← ends tab
+          ## 9.45 (June 24, 2026)          ← version header
+          ### Changed                        ← public category
+          <div data-tab="Renames (1)">      ← tab -> canonical change type via _TAB_TO_CHANGE_TYPE
+          * Renamed `"X" (ID)` to `Y`      ← skill entry
+          </div>                             ← end of tab
+          ### Internal Only                  ← skipped category (never emitted)
+          <div data-toggle="All 79 Changes"> ← skipped
+          * Blacklisted `...`                ← skipped
 
-        We parse line-by-line so no HTML renderer is needed.
+        Rules:
+          - data-tab="Label (N)"         -> strip count, look up in _TAB_TO_CHANGE_TYPE
+          - data-toggle="All N Label"    -> strip "All N ", look up in _TAB_TO_CHANGE_TYPE
+          - Tab label not in mapping     -> warn once, ignore that tab's items
+          - ### Internal Only (or any _SKIP_CATEGORIES entry) -> skip until next ### / ##
 
         Returns:
             bool: True if successful, False otherwise
@@ -371,14 +406,15 @@ class LightcastChangelogScraper:
         current_month_display = None
         current_month_sortable = None
         current_version = None
-        current_tab = None        # stripped label, e.g. "Renames"
+        current_tab = None       # canonical Change_Type, e.g. "Renamed", "Added"
+        current_category = None  # raw h3 heading, e.g. "Changed", "Internal Only"
         entries_in_section = 0
         version_count = 0
 
         for line in lines:
             s = line.strip()
 
-            # ── Version header: ## 9.42 (April 01, 2026) ─────────────────────
+            # ── Version header: ## 9.45 (June 24, 2026) ──────────────────────
             if s.startswith('## '):
                 if current_month_display and entries_in_section:
                     print(f"  ✓ Extracted {entries_in_section} entries")
@@ -387,104 +423,91 @@ class LightcastChangelogScraper:
                     current_month_display, current_month_sortable = self.parse_month_year(header_text)
                     current_version = self.parse_version(header_text)
                     current_tab = None
+                    current_category = None
                     entries_in_section = 0
                     version_count += 1
                     if current_month_display:
                         print(f"📅 Processing: {current_month_display} {current_version or ''}")
                 continue
 
-            # ── Category heading: ### Changed / Added / Removed ───────────────
+            # ── Category heading: ### Changed / Added / Internal Only / etc. ──
             if s.startswith('### '):
+                current_category = s[4:].strip()
                 current_tab = None
                 continue
 
-            # ── Tab opening: <div data-tab="Renames (7)"> or <div data-toggle="All 304 Additions"> ─
+            # Skip every line that belongs to a hidden/internal category
+            if current_category and current_category.lower() in self._SKIP_CATEGORIES:
+                continue
+
+            # ── Tab opening ───────────────────────────────────────────────────
+            # Handles both:
+            #   data-tab="Renames (7)"           -> strip trailing "(N)"
+            #   data-toggle="All 304 Additions"  -> strip leading "All N "
             if 'data-tab=' in s or 'data-toggle=' in s:
                 m = re.search(r'data-(?:tab|toggle)=["\']([^"\']+)["\']', s)
                 if m:
-                    label = m.group(1)
-                    # Strip trailing count "(N)" — e.g. "Renames (7)" → "Renames"
-                    label = re.sub(r'\s*\(\d+\)\s*$', '', label).strip()
-                    # Strip leading "All N " — e.g. "All 304 Additions" → "Additions"
-                    label = re.sub(r'^All\s+\d+\s+', '', label).strip()
-                    # Normalize plural nouns to match other tab labels
-                    label = re.sub(r'^Additions$', 'Added', label, flags=re.IGNORECASE)
-                    label = re.sub(r'^Removals$', 'Removed', label, flags=re.IGNORECASE)
-                    current_tab = label
+                    raw_label = m.group(1)
+                    # Normalise to bare label
+                    label = re.sub(r'\s*\(\d+\)\s*$', '', raw_label).strip()  # "Renames (7)" -> "Renames"
+                    label = re.sub(r'^All\s+\d+\s+', '', label).strip()        # "All 304 Additions" -> "Additions"
+
+                    change_type = self._TAB_TO_CHANGE_TYPE.get(label.lower())
+                    if change_type is None and current_category:
+                        # Fallback: infer from the ### category when the tab label
+                        # is non-standard (e.g. older "All N Changes" under ### Removed)
+                        change_type = self._CATEGORY_FALLBACK.get(current_category.lower())
+                    if change_type is None:
+                        # Truly unknown label — preserve it as-is so new Lightcast
+                        # tag types are captured automatically without code changes
+                        change_type = label
+                    current_tab = change_type
                 continue
 
-            # ── Closing div: reset tab so items between tabs are ignored ───────
+            # ── Closing div: deactivate current tab ───────────────────────────
             if s == '</div>':
                 current_tab = None
                 continue
 
-            # ── Skill list item: * Renamed `"X" (ID)` to `Y` ─────────────────
-            if s.startswith('* ') and current_month_display and current_tab:
-                skill_text = s[2:].strip()
-                # Strip backtick code spans: `text` → text
-                skill_text = re.sub(r'`([^`]*)`', r'\1', skill_text)
+            # ── Skill list item ───────────────────────────────────────────────
+            if not (s.startswith('* ') and current_month_display and current_tab):
+                continue
 
-                change_type = current_tab
+            skill_text = s[2:].strip()
+            # Strip backtick code spans: `text` -> text
+            skill_text = re.sub(r'`([^`]*)`', r'\1', skill_text)
 
-                if 'rename' in change_type.lower():
-                    renamed_match = re.search(r'Renamed\s+(.+?)\s+to\s+(.+?)$', skill_text, re.IGNORECASE)
-                    if renamed_match:
-                        original = self.clean_skill_text(renamed_match.group(1))
-                        new = self.clean_skill_text(renamed_match.group(2))
-                        self.raw_data.append({
-                            'Month_Year_Display': current_month_display,
-                            'Month_Year_Sortable': current_month_sortable,
-                            'Version': current_version or '',
-                            'Change_Type': 'Renamed',
-                            'Skill_Name': new,
-                            'Original_Name': original,
-                            'Notes': ''
-                        })
-                    else:
-                        self.raw_data.append({
-                            'Month_Year_Display': current_month_display,
-                            'Month_Year_Sortable': current_month_sortable,
-                            'Version': current_version or '',
-                            'Change_Type': change_type,
-                            'Skill_Name': self.clean_skill_text(skill_text),
-                            'Original_Name': '',
-                            'Notes': ''
-                        })
-                elif 'consolidat' in change_type.lower():
-                    consol_match = re.search(r'Consolidated\s+(.+?)\s+into\s+(.+?)$', skill_text, re.IGNORECASE)
-                    if consol_match:
-                        original = self.clean_skill_text(consol_match.group(1))
-                        new = self.clean_skill_text(consol_match.group(2))
-                        self.raw_data.append({
-                            'Month_Year_Display': current_month_display,
-                            'Month_Year_Sortable': current_month_sortable,
-                            'Version': current_version or '',
-                            'Change_Type': 'Consolidated',
-                            'Skill_Name': new,
-                            'Original_Name': original,
-                            'Notes': ''
-                        })
-                    else:
-                        self.raw_data.append({
-                            'Month_Year_Display': current_month_display,
-                            'Month_Year_Sortable': current_month_sortable,
-                            'Version': current_version or '',
-                            'Change_Type': change_type,
-                            'Skill_Name': self.clean_skill_text(skill_text),
-                            'Original_Name': '',
-                            'Notes': ''
-                        })
+            entry = {
+                'Month_Year_Display': current_month_display,
+                'Month_Year_Sortable': current_month_sortable,
+                'Version': current_version or '',
+                'Change_Type': current_tab,
+                'Skill_Name': '',
+                'Original_Name': '',
+                'Notes': '',
+            }
+
+            if current_tab == 'Renamed':
+                m = re.search(r'Renamed\s+(.+?)\s+to\s+(.+?)$', skill_text, re.IGNORECASE)
+                if m:
+                    entry['Original_Name'] = self.clean_skill_text(m.group(1))
+                    entry['Skill_Name']    = self.clean_skill_text(m.group(2))
                 else:
-                    self.raw_data.append({
-                        'Month_Year_Display': current_month_display,
-                        'Month_Year_Sortable': current_month_sortable,
-                        'Version': current_version or '',
-                        'Change_Type': change_type,
-                        'Skill_Name': self.clean_skill_text(skill_text),
-                        'Original_Name': '',
-                        'Notes': ''
-                    })
-                entries_in_section += 1
+                    entry['Skill_Name'] = self.clean_skill_text(skill_text)
+
+            elif current_tab == 'Consolidated':
+                m = re.search(r'Consolidated\s+(.+?)\s+into\s+(.+?)$', skill_text, re.IGNORECASE)
+                if m:
+                    entry['Original_Name'] = self.clean_skill_text(m.group(1))
+                    entry['Skill_Name']    = self.clean_skill_text(m.group(2))
+                else:
+                    entry['Skill_Name'] = self.clean_skill_text(skill_text)
+
+            else:
+                entry['Skill_Name'] = self.clean_skill_text(skill_text)
+
+            self.raw_data.append(entry)
+            entries_in_section += 1
 
         # Print count for last section
         if current_month_display and entries_in_section:
@@ -536,7 +559,7 @@ class LightcastChangelogScraper:
             original_count = len(self.df)
             self.df = self.df[self.df['Month_Year_Sortable'].isin(self.date_filter)]
             filtered_count = len(self.df)
-            print(f"🔍 Date filter applied: {original_count} → {filtered_count} rows")
+            print(f"🔍 Date filter applied: {original_count} -> {filtered_count} rows")
 
             if filtered_count == 0:
                 print("⚠️  Warning: No data matches the specified date filter!")
@@ -554,7 +577,7 @@ class LightcastChangelogScraper:
 
             self.df = self.df[self.df['Version'].isin(normalized_versions)]
             filtered_count = len(self.df)
-            print(f"🔍 Version filter applied: {original_count} → {filtered_count} rows")
+            print(f"🔍 Version filter applied: {original_count} -> {filtered_count} rows")
 
             if filtered_count == 0:
                 print("⚠️  Warning: No data matches the specified version filter!")
@@ -569,27 +592,32 @@ class LightcastChangelogScraper:
 
         return True
 
-    def enrich_descriptions(self, batch_pct: float = 0.25) -> None:
+    def enrich_descriptions(
+        self,
+        batch_pct: float = 0.25,
+        description_types: Optional[List[str]] = None,
+    ) -> None:
         """
-        Populate the Description column for Added and Renamed rows using
-        Claude Haiku. Skills are sent in sequential batches of batch_pct of
-        the total target rows (default 25% → 4 API calls).
+        Populate the Description column using Claude Haiku.
 
-        No-op when:
-          - df is empty / None
-          - ANTHROPIC_API_KEY is absent
-          - ai.client cannot be imported
-
-        Each batch failure is caught independently — already-completed batches
-        are preserved; the failed batch's rows retain an empty description.
+        description_types: list of Change_Type values to describe.
+          None (default) = describe all rows.
+          Empty list     = skip enrichment entirely.
         """
         if self.df is None or self.df.empty:
             return
 
-        mask = self.df['Change_Type'].isin(['Added', 'Renamed'])
-        target_idx = self.df[mask].index.tolist()
+        if description_types is not None and len(description_types) == 0:
+            print("ℹ️  No description types selected — skipping enrichment")
+            return
+
+        if description_types is not None:
+            target_idx = self.df[self.df['Change_Type'].isin(description_types)].index.tolist()
+        else:
+            target_idx = self.df.index.tolist()
+
         if not target_idx:
-            print("ℹ️  No Added/Renamed skills — skipping description enrichment")
+            print("ℹ️  No matching skills — skipping description enrichment")
             return
 
         # Lazy import — keeps scraper usable without the ai package
@@ -631,22 +659,38 @@ class LightcastChangelogScraper:
 
         def _clean_display_name(row) -> str:
             """
-            Extract the bare skill name for the LLM prompt.
-            Added rows store the full changelog text, e.g.:
-              'Added "Electric Bicycles" as a Specialized Skill'
-            We want just: 'Electric Bicycles'
-            Renamed rows already store the new name cleanly.
+            Extract the bare skill name from each change type's raw text.
+
+            Raw Skill_Name formats per type:
+              Added         -> 'Added "Bolt.new" as a Specialized Skill'
+              Renamed       -> 'CompTIA PenTest+'              (already clean)
+              Consolidated  -> 'Adobe Experience Manager'      (already clean)
+              Type Changes  -> 'Changed "Bilingual (Spanish/English)" from a Common Skill to a Specialized Skill'
+              Tagging Changes -> 'Altered tagging criteria for "Deep Learning"'
+              Removed       -> 'Removed skill "10BASE-FL"'
+              Flag Changes  -> free-form text, extract first quoted phrase or use as-is
+              Taxonomy Change -> free-form, extract first quoted phrase or use as-is
             """
-            if row['Change_Type'] == 'Added':
-                # Pull text inside the first quoted pair (straight or curly quotes)
-                m = re.search(r'["“]([^"”]+)["”]', row['Skill_Name'])
-                if m:
-                    return m.group(1).strip()
-                # Fallback: strip leading "Added " and trailing " as a ..."
-                name = re.sub(r'^Added\s+', '', row['Skill_Name'], flags=re.IGNORECASE)
-                name = re.sub(r'\s+as\s+a\s+.*$', '', name, flags=re.IGNORECASE)
-                return name.strip().strip('"')
-            return row['Skill_Name']
+            skill_name = row['Skill_Name']
+            change_type = row['Change_Type']
+
+            if change_type in ('Renamed', 'Consolidated'):
+                # Already the clean skill name
+                return skill_name
+
+            # For all other types, try to extract the first quoted phrase
+            m = re.search(r'[""]([^""]+)[""]', skill_name)
+            if m:
+                return m.group(1).strip()
+
+            # Fallback patterns for common prefixes
+            for prefix in (
+                r'^Added\s+', r'^Removed\s+skill\s+', r'^Altered\s+tagging\s+criteria\s+for\s+',
+                r'^Changed\s+', r'^Consolidated\s+', r'^Renamed\s+',
+            ):
+                skill_name = re.sub(prefix, '', skill_name, flags=re.IGNORECASE)
+
+            return skill_name.strip().strip('"').strip()
 
         for batch_num, idx_chunk in enumerate(batches, 1):
             rows = self.df.loc[idx_chunk]

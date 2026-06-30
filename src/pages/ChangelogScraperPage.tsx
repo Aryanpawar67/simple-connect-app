@@ -29,6 +29,11 @@ import {
 type FilterMode = "all" | "specific" | "range";
 type RunState = "idle" | "loading" | "success" | "empty" | "error";
 
+const ALL_DESCRIPTION_TYPES = [
+  "Added", "Renamed", "Consolidated", "Type Changes",
+  "Tagging Changes", "Removed", "Flag Changes", "Taxonomy Change",
+];
+
 const MONTH_NAMES = [
   "January","February","March","April","May","June",
   "July","August","September","October","November","December",
@@ -92,6 +97,7 @@ const ChangelogScraperPage = () => {
   const [months, setMonths] = useState("");
   const [startMonth, setStartMonth] = useState("");
   const [endMonth, setEndMonth] = useState("");
+  const [descriptionTypes, setDescriptionTypes] = useState<Set<string>>(new Set(ALL_DESCRIPTION_TYPES));
   const [runState, setRunState] = useState<RunState>("idle");
   const [progressStep, setProgressStep] = useState(0);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -155,6 +161,11 @@ const ChangelogScraperPage = () => {
     if (filterMode === "range") {
       params.append("start", startMonth);
       params.append("end", endMonth);
+    }
+    // Only send if it's a subset; omit entirely when all are selected (backend default = all)
+    const allSelected = ALL_DESCRIPTION_TYPES.every(t => descriptionTypes.has(t));
+    if (!allSelected) {
+      params.append("description_types", [...descriptionTypes].join(","));
     }
 
     const es = new EventSource(apiUrl(`/api/changelog/stream?${params}`));
@@ -322,6 +333,52 @@ const ChangelogScraperPage = () => {
           )}
         </Card>
       )}
+
+      {/* Description Types */}
+      <Card className="p-6">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+            Generate AI Descriptions For
+          </h3>
+          <div className="flex gap-2 text-xs">
+            <button
+              className="text-primary hover:underline"
+              onClick={() => setDescriptionTypes(new Set(ALL_DESCRIPTION_TYPES))}
+            >Select all</button>
+            <span className="text-muted-foreground">·</span>
+            <button
+              className="text-primary hover:underline"
+              onClick={() => setDescriptionTypes(new Set())}
+            >None</button>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {ALL_DESCRIPTION_TYPES.map((type) => {
+            const active = descriptionTypes.has(type);
+            return (
+              <button
+                key={type}
+                onClick={() => {
+                  const next = new Set(descriptionTypes);
+                  active ? next.delete(type) : next.add(type);
+                  setDescriptionTypes(next);
+                }}
+                className={cn(
+                  "px-3 py-1.5 rounded-full text-xs font-medium border transition-all",
+                  active
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "bg-background text-muted-foreground border-border hover:border-muted-foreground/50"
+                )}
+              >
+                {type}
+              </button>
+            );
+          })}
+        </div>
+        {descriptionTypes.size === 0 && (
+          <p className="text-xs text-muted-foreground mt-2">No descriptions will be generated — Description column will be empty.</p>
+        )}
+      </Card>
 
       {/* Filename Preview */}
       {isValid && filename && (
